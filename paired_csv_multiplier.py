@@ -26,14 +26,14 @@ import pandas as pd
 
 # Root directory to search recursively (all subfolders, any depth) for
 # paired data CSVs.
-ROOT_DIR = Path(r"/path/to/data/root")
+ROOT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron')
 
 # Path to the static lookup CSV (label, val2, val3).
-STATIC_LOOKUP_PATH = Path(r"/path/to/lookup.csv")
+STATIC_LOOKUP_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/Geometry/Geometry_20260804.csv')
 
 # Directory + base filename for the output. A timestamp is appended on
 # every run so a previous output is never silently overwritten.
-OUTPUT_DIR = Path(r"/path/to/output")
+OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/StressStrainFiles')
 OUTPUT_BASENAME = "multiplied_output"
 
 # --- Column positions ---
@@ -42,10 +42,10 @@ OUTPUT_BASENAME = "multiplied_output"
 # Column to pull out of the <base>.csv file. Independent from the _ex
 # index below — the two files are not required to use the same column.
 # Example: SOURCE_COL_INDEX_BASE = 2 means the THIRD column.
-SOURCE_COL_INDEX_BASE = 2
+SOURCE_COL_INDEX_BASE = 9
 
 # Column to pull out of the <base>_ex.csv file.
-SOURCE_COL_INDEX_EX = 2
+SOURCE_COL_INDEX_EX = 13
 
 # Columns in the static lookup file:
 #   STATIC_LABEL_COL_INDEX -> the label, matched against <base>
@@ -234,6 +234,40 @@ def read_source_column(
     return pd.to_numeric(df.iloc[:, col_index], errors="coerce")
 
 
+def excel_column_letter(col_index: int) -> str:
+    """Convert a 0-based column index to an Excel-style letter (0->A, 25->Z, 26->AA)."""
+    n = col_index + 1
+    letters = ""
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def describe_bad_cells(
+    col: pd.Series,
+    col_index: int,
+    header_rows_before_data: int,
+    source_label: str,
+    path: Path,
+) -> list[str]:
+    """List 'cell REF (row N) in <source_label> file (path)' for every NaN in col.
+
+    header_rows_before_data is how many header lines precede the first
+    data row in the actual CSV file (used to translate a 0-based data
+    row position back into a real 1-based spreadsheet row number).
+    """
+    col_letter = excel_column_letter(col_index)
+    messages = []
+    for pos in col.index[col.isna()]:
+        row_number = pos + header_rows_before_data + 1
+        messages.append(
+            f"cell {col_letter}{row_number} (row {row_number}) in {source_label} "
+            f"file ({path})"
+        )
+    return messages
+
+
 def process_pair(
     name: str,
     base_path: Path,
@@ -297,10 +331,19 @@ def process_pair(
         )
         return None
 
-    if base_col.isna().any() or ex_col.isna().any():
+    bad_cells = describe_bad_cells(
+        base_col, SOURCE_COL_INDEX_BASE, header_rows_before_data=1, source_label="base", path=base_path
+    ) + describe_bad_cells(
+        ex_col,
+        SOURCE_COL_INDEX_EX,
+        header_rows_before_data=1 + EX_EXTRA_HEADER_ROWS,
+        source_label=PAIR_SUFFIX,
+        path=ex_path,
+    )
+    if bad_cells:
         log.append(
-            f"SKIP '{name}': blank/non-numeric/NaN value found in the "
-            f"source column of the base or _ex file"
+            f"SKIP '{name}': blank/non-numeric/NaN value(s) found — "
+            + "; ".join(bad_cells)
         )
         return None
 
