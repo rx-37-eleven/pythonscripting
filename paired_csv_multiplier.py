@@ -36,9 +36,13 @@ OUTPUT_BASENAME = "multiplied_output"
 # --- Column positions ---
 # 0-based indexing: 0 is the FIRST column, 1 the second, 2 the third, etc.
 
-# Column to pull out of each data file (<base>.csv / <base>_ex.csv).
-# Example: SOURCE_COL_INDEX = 2 means the THIRD column.
-SOURCE_COL_INDEX = 2
+# Column to pull out of the <base>.csv file. Independent from the _ex
+# index below — the two files are not required to use the same column.
+# Example: SOURCE_COL_INDEX_BASE = 2 means the THIRD column.
+SOURCE_COL_INDEX_BASE = 2
+
+# Column to pull out of the <base>_ex.csv file.
+SOURCE_COL_INDEX_EX = 2
 
 # Columns in the static lookup file:
 #   STATIC_LABEL_COL_INDEX -> the label, matched against <base>
@@ -52,6 +56,12 @@ STATIC_VAL3_COL_INDEX = 2
 # than hardcoded inline) so other suffixes can be supported later.
 PAIR_SUFFIX = "_ex"
 
+# Number of extra header-like rows that appear in every _ex file
+# immediately after its normal header row (before real data starts).
+# These rows are skipped when reading _ex files so their data rows
+# align 1:1 with the base file's data rows.
+EX_EXTRA_HEADER_ROWS = 1
+
 # ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
 # brief's "definition of done"):
@@ -62,7 +72,12 @@ PAIR_SUFFIX = "_ex"
 #       a pair's base/_ex files have different row counts, that pair is
 #       SKIPPED (logged) rather than truncated.
 #  4.   Headers: every CSV — data files AND the static lookup file —
-#       has a header row.
+#       has a header row. _ex files additionally have ONE EXTRA
+#       header-like row right after the normal header (two header
+#       lines total before real data starts). That extra row is
+#       skipped when reading every _ex file (see EX_EXTRA_HEADER_ROWS
+#       below), so _ex data rows line up 1:1 with the base file's data
+#       rows — a length mismatch after that skip is still an error.
 #  5.   Missing lookup label: pair is SKIPPED (logged); not an error,
 #       not treated as multiplier = 1.
 #  6.   Label matching: EXACT match, case-sensitive, no whitespace
@@ -179,14 +194,21 @@ def discover_pairs(
     return pairs, skip_log
 
 
-def read_source_column(path: Path, col_index: int) -> pd.Series | None:
+def read_source_column(
+    path: Path, col_index: int, extra_header_rows: int = 0
+) -> pd.Series | None:
     """Read one column (by position) from a data CSV as numeric values.
+
+    extra_header_rows skips that many additional rows immediately after
+    the normal header row before data is read (used for _ex files,
+    which have one extra header-like row — see EX_EXTRA_HEADER_ROWS).
 
     Blank cells, non-numeric text, and existing NaNs all become NaN via
     coercion — the caller checks for these to decide whether to skip
     the pair. Returns None if col_index is out of range for this file.
     """
-    df = pd.read_csv(path)
+    skiprows = range(1, 1 + extra_header_rows) if extra_header_rows else None
+    df = pd.read_csv(path, skiprows=skiprows)
     if col_index >= df.shape[1]:
         return None
     return pd.to_numeric(df.iloc[:, col_index], errors="coerce")
@@ -221,26 +243,29 @@ def process_pair(
         )
         return None
 
-    base_col = read_source_column(base_path, SOURCE_COL_INDEX)
-    ex_col = read_source_column(ex_path, SOURCE_COL_INDEX)
+    base_col = read_source_column(base_path, SOURCE_COL_INDEX_BASE)
+    ex_col = read_source_column(
+        ex_path, SOURCE_COL_INDEX_EX, extra_header_rows=EX_EXTRA_HEADER_ROWS
+    )
 
     if base_col is None:
         log.append(
-            f"SKIP '{name}': base file has fewer than {SOURCE_COL_INDEX + 1} "
-            f"columns ({base_path})"
+            f"SKIP '{name}': base file has fewer than "
+            f"{SOURCE_COL_INDEX_BASE + 1} columns ({base_path})"
         )
         return None
     if ex_col is None:
         log.append(
             f"SKIP '{name}{PAIR_SUFFIX}': _ex file has fewer than "
-            f"{SOURCE_COL_INDEX + 1} columns ({ex_path})"
+            f"{SOURCE_COL_INDEX_EX + 1} columns ({ex_path})"
         )
         return None
 
     if len(base_col) != len(ex_col):
         log.append(
-            f"SKIP '{name}': row count mismatch — base has {len(base_col)} "
-            f"rows, {name}{PAIR_SUFFIX} has {len(ex_col)} rows"
+            f"SKIP '{name}': row count mismatch after accounting for the "
+            f"_ex file's extra header row — base has {len(base_col)} data "
+            f"rows, {name}{PAIR_SUFFIX} has {len(ex_col)} data rows"
         )
         return None
 
