@@ -7,7 +7,8 @@ per-base val2/val3 looked up from a static CSV (the _ex column is
 written unchanged, no math applied), and writes the results into one
 combined output CSV with two header rows: the pair name, then
 "strain"/"stress" per column. Each pair's _ex column is written before
-its base column.
+its base column. Rows whose <base>.csv source-column value is below
+BASE_MIN_VALUE are dropped from the pair (see CONFIG below).
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas (also used to read/write CSVs).
@@ -78,6 +79,14 @@ PAIR_SUFFIX = "_ex"
 ROW2_LABEL_BASE = "stress"
 ROW2_LABEL_EX = "strain"
 
+# Rows whose <base>.csv source-column value is strictly less than this
+# are dropped from the pair (the aligned _ex row is dropped too). This
+# applies to the RAW value read from the base CSV, before the
+# (value * 1000) / (val2 * val3) math — flip to compare against the
+# post-math value if that turns out to be the intent instead. Set to
+# None to disable filtering.
+BASE_MIN_VALUE = 1.0
+
 # Number of extra header-like rows that appear in every _ex file
 # immediately after its normal header row (before real data starts).
 # These rows are skipped when reading _ex files so their data rows
@@ -116,6 +125,10 @@ EX_EXTRA_HEADER_ROWS = 1
 #       treated as zero, not silently dropped row by row.
 #  11.  No rounding — computed values are written at full float
 #       precision.
+#  - Row filter: rows whose <base>.csv source-column RAW value is below
+#    BASE_MIN_VALUE are dropped from the pair (both base and _ex, to
+#    stay aligned); if that removes every row, the pair is SKIPPED
+#    (logged).
 #
 # Output math (per pair):
 #   <base> column    = (<base> source value * 1000) / (val2 * val3)
@@ -376,6 +389,25 @@ def process_pair(
             + "; ".join(bad_cells)
         )
         return None
+
+    # Filter on the RAW base value, before the (value * 1000) / denominator
+    # math below — flip to filter on the post-math value if that turns out
+    # to be the intent instead.
+    if BASE_MIN_VALUE is not None:
+        keep = base_col >= BASE_MIN_VALUE
+        dropped = (~keep).sum()
+        base_col = base_col[keep]
+        ex_col = ex_col[keep]
+        if dropped:
+            log.append(
+                f"  '{name}': dropped {dropped} row(s) with base value < "
+                f"{BASE_MIN_VALUE}"
+            )
+        if base_col.empty:
+            log.append(
+                f"SKIP '{name}': no rows remain after BASE_MIN_VALUE filter"
+            )
+            return None
 
     base_result = ((base_col * 1000) / denominator).reset_index(drop=True)
     ex_result = ex_col.reset_index(drop=True)  # no math applied to _ex
