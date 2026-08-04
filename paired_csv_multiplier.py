@@ -6,7 +6,8 @@ column out of each file, computes (<base> * 1000) / (val2 * val3) using
 per-base val2/val3 looked up from a static CSV (the _ex column is
 written unchanged, no math applied), and writes the results into one
 combined output CSV with two header rows: the pair name, then
-"stress"/"strain" per column.
+"strain"/"stress" per column. Each pair's _ex column is written before
+its base column.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas (also used to read/write CSVs).
@@ -60,7 +61,8 @@ PAIR_SUFFIX = "_ex"
 
 # Second output header row, written under each pair's column names —
 # ROW2_LABEL_BASE under every <base> column, ROW2_LABEL_EX under every
-# <base>_ex column (e.g. output row 2 reads "stress,strain,stress,strain,...").
+# <base>_ex column. Output columns are ordered <base>_ex then <base> per
+# pair, so output row 2 reads "strain,stress,strain,stress,...".
 ROW2_LABEL_BASE = "stress"
 ROW2_LABEL_EX = "strain"
 
@@ -108,9 +110,10 @@ EX_EXTRA_HEADER_ROWS = 1
 #   <base>_ex column = <base>_ex source value, UNCHANGED — no math applied.
 #   If val2 * val3 == 0 for a pair's label, that pair is SKIPPED (logged)
 #   rather than dividing by zero.
-# Output header: two rows. Row 1 is the pair's column name (e.g. "fl15",
-# "fl15_ex"). Row 2 is ROW2_LABEL_BASE/ROW2_LABEL_EX per column, i.e.
-# "stress,strain,stress,strain,..." across a full row of pairs.
+# Output column order: <base>_ex before <base> for each pair (e.g.
+# "fl15_ex,fl15,fl16_ex,fl16,..."). Output header: two rows. Row 1 is
+# the pair's column name. Row 2 is ROW2_LABEL_EX/ROW2_LABEL_BASE per
+# column, i.e. "strain,stress,strain,stress,..." across a full row.
 #  12.  Scale: expected up to hundreds of pairs / thousands of rows per
 #       file — everything is loaded with pandas in memory, no
 #       streaming required.
@@ -336,8 +339,8 @@ def run() -> None:
         if outcome is None:
             continue
         base_result, ex_result = outcome
-        results[name] = base_result
         results[f"{name}{PAIR_SUFFIX}"] = ex_result
+        results[name] = base_result
         processed.append(name)
 
     print("\n--- Skipped / logged items ---")
