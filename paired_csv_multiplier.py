@@ -36,15 +36,17 @@ STATIC_LOOKUP_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU
 OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/StressStrainFiles')
 OUTPUT_BASENAME = "multiplied_output"
 
-# Folder names (not full paths, just the directory name itself) to
-# exclude from the recursive search — any .csv file that lives inside a
-# directory whose name exactly matches one of these, at any depth under
-# ROOT_DIR, is skipped entirely before pairing even runs. Matching is
-# exact and case-sensitive, same convention as label matching. Useful
+# Full folder paths to exclude from the recursive search — any .csv
+# file that lives inside one of these directories, or any of their
+# subdirectories, is skipped entirely before pairing even runs. Useful
 # for excluding the output folder (so old output files never get
-# rescanned as data) or any other subfolder that shouldn't be searched.
-# Example: EXCLUDED_FOLDER_NAMES = {"StressStrainFiles", "Archive"}
-EXCLUDED_FOLDER_NAMES: set[str] = set()
+# rescanned as data) or any other subtree that shouldn't be searched.
+# Example paths (edit/remove to match your tree):
+EXCLUDED_FOLDER_PATHS: set[Path] = {
+    Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/StressStrainFiles'),
+    Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/Geometry'),
+    Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/Archive'),
+}
 
 # --- Column positions ---
 # 0-based indexing: 0 is the FIRST column, 1 the second, 2 the third, etc.
@@ -141,20 +143,23 @@ EX_EXTRA_HEADER_ROWS = 1
 # =====================================================================
 
 
-def find_all_csvs(root: Path, excluded_folder_names: set[str]) -> tuple[list[Path], int]:
+def find_all_csvs(root: Path, excluded_folder_paths: set[Path]) -> tuple[list[Path], int]:
     """Recursively find every .csv file under root, at any depth.
 
-    Any file inside a directory whose name exactly matches one of
-    excluded_folder_names (at any depth under root) is left out.
-    Returns (included_files, excluded_count).
+    Any file whose path falls inside one of excluded_folder_paths (or
+    any of their subdirectories) is left out. Returns
+    (included_files, excluded_count).
     """
+    excluded_resolved = [p.resolve() for p in excluded_folder_paths]
     included: list[Path] = []
     excluded_count = 0
     for p in sorted(root.rglob("*.csv")):
         if not p.is_file():
             continue
-        folder_names = p.relative_to(root).parts[:-1]
-        if any(part in excluded_folder_names for part in folder_names):
+        resolved = p.resolve()
+        if any(
+            resolved == ex or ex in resolved.parents for ex in excluded_resolved
+        ):
             excluded_count += 1
             continue
         included.append(p)
@@ -384,12 +389,12 @@ def build_output_path(output_dir: Path, basename: str) -> Path:
 
 def run() -> None:
     print(f"Scanning '{ROOT_DIR}' for CSV files...")
-    csv_files, excluded_count = find_all_csvs(ROOT_DIR, EXCLUDED_FOLDER_NAMES)
+    csv_files, excluded_count = find_all_csvs(ROOT_DIR, EXCLUDED_FOLDER_PATHS)
     print(f"  found {len(csv_files)} CSV file(s) total")
     if excluded_count:
         print(
-            f"  ({excluded_count} file(s) excluded via EXCLUDED_FOLDER_NAMES "
-            f"{sorted(EXCLUDED_FOLDER_NAMES)})"
+            f"  ({excluded_count} file(s) excluded via EXCLUDED_FOLDER_PATHS "
+            f"{sorted(str(p) for p in EXCLUDED_FOLDER_PATHS)})"
         )
 
     print(f"Loading static lookup file '{STATIC_LOOKUP_PATH}'...")
