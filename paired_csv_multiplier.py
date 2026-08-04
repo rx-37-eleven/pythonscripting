@@ -394,7 +394,7 @@ def process_pair(
     # math below — flip to filter on the post-math value if that turns out
     # to be the intent instead.
     if BASE_MIN_VALUE is not None:
-        keep = base_col >= BASE_MIN_VALUE
+        keep = (base_col >= BASE_MIN_VALUE).to_numpy()
         dropped = (~keep).sum()
         base_col = base_col[keep]
         ex_col = ex_col[keep]
