@@ -129,10 +129,6 @@ EX_EXTRA_HEADER_ROWS = 1
 #  12.  Scale: expected up to hundreds of pairs / thousands of rows per
 #       file — everything is loaded with pandas in memory, no
 #       streaming required.
-#  13.  Row filter: after row alignment, any row where the <base>
-#       source value is less than 1 is dropped from BOTH the <base> and
-#       <base>_ex results before the math/output step (not treated as
-#       bad data — just excluded from the pair's output).
 #
 # Additional resolved details:
 #  - Combined-output padding: pairs with fewer rows than the longest
@@ -380,10 +376,6 @@ def process_pair(
             + "; ".join(bad_cells)
         )
         return None
-
-    keep_mask = base_col >= 1
-    base_col = base_col[keep_mask]
-    ex_col = ex_col[keep_mask]
 
     base_result = ((base_col * 1000) / denominator).reset_index(drop=True)
     ex_result = ex_col.reset_index(drop=True)  # no math applied to _ex
