@@ -2,9 +2,11 @@
 Paired-CSV column extractor and multiplier.
 
 Walks a directory tree for <base>.csv / <base>_ex.csv pairs, pulls one
-column out of each file, multiplies each by a per-base scaling factor
-looked up from a static CSV, and writes the results into one combined
-output CSV.
+column out of each file, computes (<base> * 1000) / (val2 * val3) using
+per-base val2/val3 looked up from a static CSV (the _ex column is
+written unchanged, no math applied), and writes the results into one
+combined output CSV with two header rows: the pair name, then
+"stress"/"strain" per column.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas (also used to read/write CSVs).
@@ -46,8 +48,8 @@ SOURCE_COL_INDEX_EX = 2
 
 # Columns in the static lookup file:
 #   STATIC_LABEL_COL_INDEX -> the label, matched against <base>
-#   STATIC_VAL2_COL_INDEX  -> val2 (multiplier applied to the base file's column)
-#   STATIC_VAL3_COL_INDEX  -> val3 (multiplier applied to the _ex file's column)
+#   STATIC_VAL2_COL_INDEX  -> val2 (used with val3 in the <base> formula below)
+#   STATIC_VAL3_COL_INDEX  -> val3 (used with val2 in the <base> formula below)
 STATIC_LABEL_COL_INDEX = 0
 STATIC_VAL2_COL_INDEX = 1
 STATIC_VAL3_COL_INDEX = 2
@@ -55,6 +57,12 @@ STATIC_VAL3_COL_INDEX = 2
 # Suffix that marks the "_ex" half of a pair. Kept as a constant (rather
 # than hardcoded inline) so other suffixes can be supported later.
 PAIR_SUFFIX = "_ex"
+
+# Second output header row, written under each pair's column names —
+# ROW2_LABEL_BASE under every <base> column, ROW2_LABEL_EX under every
+# <base>_ex column (e.g. output row 2 reads "stress,strain,stress,strain,...").
+ROW2_LABEL_BASE = "stress"
+ROW2_LABEL_EX = "strain"
 
 # Number of extra header-like rows that appear in every _ex file
 # immediately after its normal header row (before real data starts).
@@ -92,8 +100,17 @@ EX_EXTRA_HEADER_ROWS = 1
 #  10.  Bad data (blank cell / non-numeric text / NaN) anywhere in the
 #       source column: the whole PAIR is skipped (logged) — not
 #       treated as zero, not silently dropped row by row.
-#  11.  No rounding — multiplied values are written at full float
+#  11.  No rounding — computed values are written at full float
 #       precision.
+#
+# Output math (per pair):
+#   <base> column    = (<base> source value * 1000) / (val2 * val3)
+#   <base>_ex column = <base>_ex source value, UNCHANGED — no math applied.
+#   If val2 * val3 == 0 for a pair's label, that pair is SKIPPED (logged)
+#   rather than dividing by zero.
+# Output header: two rows. Row 1 is the pair's column name (e.g. "fl15",
+# "fl15_ex"). Row 2 is ROW2_LABEL_BASE/ROW2_LABEL_EX per column, i.e.
+# "stress,strain,stress,strain,..." across a full row of pairs.
 #  12.  Scale: expected up to hundreds of pairs / thousands of rows per
 #       file — everything is loaded with pandas in memory, no
 #       streaming required.
@@ -243,6 +260,14 @@ def process_pair(
         )
         return None
 
+    denominator = val2 * val3
+    if denominator == 0:
+        log.append(
+            f"SKIP '{name}': val2 * val3 is zero (val2={val2}, val3={val3}) "
+            f"— cannot divide"
+        )
+        return None
+
     base_col = read_source_column(base_path, SOURCE_COL_INDEX_BASE)
     ex_col = read_source_column(
         ex_path, SOURCE_COL_INDEX_EX, extra_header_rows=EX_EXTRA_HEADER_ROWS
@@ -276,8 +301,8 @@ def process_pair(
         )
         return None
 
-    base_result = (base_col * val2).reset_index(drop=True)
-    ex_result = (ex_col * val3).reset_index(drop=True)
+    base_result = ((base_col * 1000) / denominator).reset_index(drop=True)
+    ex_result = ex_col.reset_index(drop=True)  # no math applied to _ex
     return base_result, ex_result
 
 
@@ -327,6 +352,12 @@ def run() -> None:
         return
 
     combined = pd.concat(results, axis=1)
+    combined.columns = pd.MultiIndex.from_tuples(
+        [
+            (col, ROW2_LABEL_EX if col.endswith(PAIR_SUFFIX) else ROW2_LABEL_BASE)
+            for col in combined.columns
+        ]
+    )
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_path = build_output_path(OUTPUT_DIR, OUTPUT_BASENAME)
