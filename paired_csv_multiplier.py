@@ -8,7 +8,9 @@ written unchanged, no math applied), and writes the results into one
 combined output CSV with two header rows: the pair name, then
 "strain"/"stress" per column. Each pair's _ex column is written before
 its base column. Rows whose <base>.csv source-column value is below
-BASE_MIN_VALUE are dropped from the pair (see CONFIG below).
+BASE_MIN_VALUE are dropped from the pair (see CONFIG below). A second
+output CSV is also written alongside the main one, summarizing the
+peak (max) stress value per pair in a compact two-row layout.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas (also used to read/write CSVs).
@@ -36,6 +38,11 @@ STATIC_LOOKUP_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU
 # every run so a previous output is never silently overwritten.
 OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/StressStrainFiles')
 OUTPUT_BASENAME = "multiplied_output"
+
+# Basename for the second output file: a per-pair peak-stress summary,
+# written into OUTPUT_DIR alongside the main output with the SAME
+# timestamp (see build_output_path / run()).
+MAX_OUTPUT_BASENAME = "max_stress"
 
 # Full folder paths to exclude from the recursive search — any .csv
 # file that lives inside one of these directories, or any of their
@@ -153,6 +160,17 @@ EX_EXTRA_HEADER_ROWS = 1
 #    static lookup file lists the same label more than once, any pair
 #    matching that label is skipped as AMBIGUOUS rather than guessing
 #    which row to use.
+#  - Peak-stress output: a second CSV summarizing the max stress per
+#    pair, built from the `combined` DataFrame already in memory (not
+#    re-read from disk). Only columns whose row-2 label is
+#    ROW2_LABEL_BASE are included (strain/_ex columns are ignored). Max
+#    uses pandas' default NaN-skipping behavior, so blank padding cells
+#    from shorter pairs don't affect the result. The file has exactly
+#    two rows — a header of pair names and one row of max values — in
+#    the same column order as `combined`, and shares the main output's
+#    timestamp so the two files are an obviously matched set. A failure
+#    while writing this file never invalidates the main output, which
+#    is always written first.
 # =====================================================================
 
 
@@ -414,9 +432,46 @@ def process_pair(
     return base_result, ex_result
 
 
-def build_output_path(output_dir: Path, basename: str) -> Path:
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+def build_output_path(output_dir: Path, basename: str, timestamp: str) -> Path:
     return output_dir / f"{basename}_{timestamp}.csv"
+
+
+def write_max_stress_output(combined: pd.DataFrame, timestamp: str) -> Path | None:
+    """Write the peak-stress-per-pair summary CSV alongside the main output.
+
+    Selects only combined's stress columns (row-2 label == ROW2_LABEL_BASE,
+    and — belt and braces — row-1 name not ending in PAIR_SUFFIX), then
+    writes a two-row CSV: pair names as the header, NaN-skipping max per
+    column as the single data row. Returns the output path, or None if
+    there were no stress columns to summarize (main output is unaffected
+    either way — this runs after the main output is already written).
+    """
+    try:
+        stress_columns = [
+            col
+            for col in combined.columns
+            if col[1] == ROW2_LABEL_BASE and not col[0].endswith(PAIR_SUFFIX)
+        ]
+        if not stress_columns:
+            print("\nNo stress columns found — skipping max-stress output file.")
+            return None
+
+        stress_df = combined.loc[:, stress_columns]
+        max_values = stress_df.max(axis=0, skipna=True)
+
+        max_output_path = build_output_path(OUTPUT_DIR, MAX_OUTPUT_BASENAME, timestamp)
+        if max_output_path.exists():
+            raise FileExistsError(
+                f"Refusing to overwrite existing output file: {max_output_path}"
+            )
+
+        pair_names = [col[0] for col in stress_columns]
+        max_row = pd.DataFrame([max_values.to_numpy()], columns=pair_names)
+        max_row.to_csv(max_output_path, index=False)
+        return max_output_path
+    except Exception as exc:
+        print(f"\nWARNING: failed to write max-stress output file: {exc}")
+        return None
 
 
 def run() -> None:
@@ -472,19 +527,24 @@ def run() -> None:
         ]
     )
 
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = build_output_path(OUTPUT_DIR, OUTPUT_BASENAME)
+    output_path = build_output_path(OUTPUT_DIR, OUTPUT_BASENAME, timestamp)
     if output_path.exists():
         raise FileExistsError(
             f"Refusing to overwrite existing output file: {output_path}"
         )
     combined.to_csv(output_path, index=False)
 
+    max_output_path = write_max_stress_output(combined, timestamp)
+
     print("\n--- Summary ---")
     print(f"  Pairs processed successfully: {len(processed)} -> {processed}")
     print(f"  Pairs/files skipped: {len(skip_log)}")
     print(f"  Rows written: {len(combined)}")
     print(f"  Output file: {output_path}")
+    print(f"  Max-stress output file: {max_output_path if max_output_path else '(skipped)'}")
 
 
 if __name__ == "__main__":
