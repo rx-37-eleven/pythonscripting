@@ -10,7 +10,8 @@ combined output CSV with two header rows: the pair name, then
 its base column. Rows whose <base>.csv source-column value is below
 BASE_MIN_VALUE are dropped from the pair (see CONFIG below). A second
 output CSV is also written alongside the main one, summarizing the
-peak (max) stress value per pair in a compact two-row layout.
+peak (max) stress value per pair, one row per pair, alongside the
+paired strain value from that same row.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas (also used to read/write CSVs).
@@ -43,6 +44,11 @@ OUTPUT_BASENAME = "multiplied_output"
 # written into OUTPUT_DIR alongside the main output with the SAME
 # timestamp (see build_output_path / run()).
 MAX_OUTPUT_BASENAME = "max_stress"
+
+# Whether the max-stress output file gets a header row
+# ("pair,max_stress,strain_at_max_stress"). Set to False to write data
+# rows only, with no logic changes required.
+MAX_OUTPUT_INCLUDE_HEADER = True
 
 # Full folder paths to exclude from the recursive search — any .csv
 # file that lives inside one of these directories, or any of their
@@ -163,11 +169,13 @@ EX_EXTRA_HEADER_ROWS = 1
 #  - Peak-stress output: a second CSV summarizing the max stress per
 #    pair, built from the `combined` DataFrame already in memory (not
 #    re-read from disk). Only columns whose row-2 label is
-#    ROW2_LABEL_BASE are included (strain/_ex columns are ignored). Max
-#    uses pandas' default NaN-skipping behavior, so blank padding cells
-#    from shorter pairs don't affect the result. The file has exactly
-#    two rows — a header of pair names and one row of max values — in
-#    the same column order as `combined`, and shares the main output's
+#    ROW2_LABEL_BASE are included (strain/_ex columns are ignored). One
+#    row per pair, in the same order the stress columns appear in
+#    `combined`: pair name, max stress (NaN-skipping), and the strain
+#    value from the SAME ROW as that max (via idxmax, not a separate
+#    max/min of the strain column; ties resolve to the first occurrence
+#    of the max). A header row is included unless
+#    MAX_OUTPUT_INCLUDE_HEADER is False. Shares the main output's
 #    timestamp so the two files are an obviously matched set. A failure
 #    while writing this file never invalidates the main output, which
 #    is always written first.
@@ -441,10 +449,22 @@ def write_max_stress_output(combined: pd.DataFrame, timestamp: str) -> Path | No
 
     Selects only combined's stress columns (row-2 label == ROW2_LABEL_BASE,
     and — belt and braces — row-1 name not ending in PAIR_SUFFIX), then
-    writes a two-row CSV: pair names as the header, NaN-skipping max per
-    column as the single data row. Returns the output path, or None if
-    there were no stress columns to summarize (main output is unaffected
-    either way — this runs after the main output is already written).
+    writes one row per pair, in the order those columns appear in
+    combined: pair name, NaN-skipping max stress, and the strain value
+    from that SAME ROW (found via idxmax on the stress column, then a
+    positional lookup into the paired _ex/strain column — never a
+    separate max/min of the strain column). On a tie for the max,
+    idxmax returns the first occurrence, so that's the row used.
+
+    A stress column that is entirely NaN has no idxmax, so that pair's
+    row is skipped (logged). A missing paired strain column still
+    produces a row with the max stress filled in and the strain cell
+    left blank (logged). A NaN strain value at the max-stress row is
+    also written blank rather than as the string "nan".
+
+    Returns the output path, or None if there were no stress columns to
+    summarize (main output is unaffected either way — this runs after
+    the main output is already written).
     """
     try:
         stress_columns = [
@@ -456,8 +476,37 @@ def write_max_stress_output(combined: pd.DataFrame, timestamp: str) -> Path | No
             print("\nNo stress columns found — skipping max-stress output file.")
             return None
 
-        stress_df = combined.loc[:, stress_columns]
-        max_values = stress_df.max(axis=0, skipna=True)
+        rows = []
+        for col in stress_columns:
+            name = col[0]
+            stress_series = combined[col]
+            if stress_series.isna().all():
+                print(
+                    f"  '{name}': stress column is entirely NaN — skipping "
+                    f"its row in the max-stress output"
+                )
+                continue
+
+            max_idx = stress_series.idxmax(skipna=True)
+            max_stress = stress_series.loc[max_idx]
+
+            ex_col = (f"{name}{PAIR_SUFFIX}", ROW2_LABEL_EX)
+            if ex_col not in combined.columns:
+                print(
+                    f"  WARNING '{name}': paired strain column {ex_col} not "
+                    f"found in combined output — leaving strain blank"
+                )
+                strain_at_max = None
+            else:
+                strain_at_max = combined.loc[max_idx, ex_col]
+                if pd.isna(strain_at_max):
+                    strain_at_max = None
+
+            rows.append((name, max_stress, strain_at_max))
+
+        if not rows:
+            print("\nNo usable stress data — skipping max-stress output file.")
+            return None
 
         max_output_path = build_output_path(OUTPUT_DIR, MAX_OUTPUT_BASENAME, timestamp)
         if max_output_path.exists():
@@ -465,9 +514,10 @@ def write_max_stress_output(combined: pd.DataFrame, timestamp: str) -> Path | No
                 f"Refusing to overwrite existing output file: {max_output_path}"
             )
 
-        pair_names = [col[0] for col in stress_columns]
-        max_row = pd.DataFrame([max_values.to_numpy()], columns=pair_names)
-        max_row.to_csv(max_output_path, index=False)
+        max_df = pd.DataFrame(
+            rows, columns=["pair", "max_stress", "strain_at_max_stress"]
+        )
+        max_df.to_csv(max_output_path, index=False, header=MAX_OUTPUT_INCLUDE_HEADER)
         return max_output_path
     except Exception as exc:
         print(f"\nWARNING: failed to write max-stress output file: {exc}")
