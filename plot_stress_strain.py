@@ -71,6 +71,9 @@ SHOW_POINT_LABELS = False
 DPI = 150
 FIGSIZE = None
 
+# Line width (points) for the modulus line.
+MODULUS_LINE_WIDTH = 1.5
+
 # ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
 # brief's "definition of done"):
@@ -100,13 +103,17 @@ FIGSIZE = None
 #    literal wording.
 #  - Curve style: line only, no per-point markers. A legend is included
 #    identifying the curve, modulus line, yield point, and UTS point.
+#  - Point markers: yield point is a green triangle ("^"), UTS point is
+#    a green square ("s").
 #  - Point annotation: controlled by SHOW_POINT_LABELS in CONFIG —
 #    off by default (marked only), can be turned on to print numeric
 #    (strain, stress) values next to the yield/UTS markers.
 #  - Figure settings: gridlines on, default matplotlib figsize (None ->
-#    matplotlib's own default), 150 DPI — all editable via CONFIG.
-#  - Config scope: axis limits, input/output paths, DPI, figsize, and
-#    SHOW_POINT_LABELS all live in the CONFIG block as named constants.
+#    matplotlib's own default), 150 DPI, modulus line width configurable
+#    via MODULUS_LINE_WIDTH — all editable via CONFIG.
+#  - Config scope: axis limits, input/output paths, DPI, figsize,
+#    MODULUS_LINE_WIDTH, and SHOW_POINT_LABELS all live in the CONFIG
+#    block as named constants.
 #  - Output: one shared timestamp (YYYYMMDD_HHMMSS) taken once at the
 #    start of the run, used in every plot's filename:
 #    <sampleID>_plot_<timestamp>.png. Sample IDs are used as-is in
@@ -222,10 +229,30 @@ def plot_sample(
     ax.plot(strain, stress, linestyle="-", label="Stress-strain curve")
 
     x0, x1 = modulus_line_x_range(slope, X_MIN, X_MAX, Y_MIN, Y_MAX)
-    ax.plot([x0, x1], [slope * x0, slope * x1], linestyle="--", label="Modulus line")
+    ax.plot(
+        [x0, x1],
+        [slope * x0, slope * x1],
+        linestyle="--",
+        linewidth=MODULUS_LINE_WIDTH,
+        label="Modulus line",
+    )
 
-    ax.plot(yield_strain, yield_stress, marker="o", linestyle="none", label="Yield point")
-    ax.plot(uts_strain, uts_stress, marker="X", linestyle="none", label="UTS point")
+    ax.plot(
+        yield_strain,
+        yield_stress,
+        marker="^",
+        color="green",
+        linestyle="none",
+        label="Yield point",
+    )
+    ax.plot(
+        uts_strain,
+        uts_stress,
+        marker="s",
+        color="green",
+        linestyle="none",
+        label="UTS point",
+    )
 
     if SHOW_POINT_LABELS:
         ax.annotate(
