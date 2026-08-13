@@ -74,6 +74,21 @@ FIGSIZE = None
 # Line width (points) for the modulus line.
 MODULUS_LINE_WIDTH = 1.5
 
+# When True, additionally group Sample IDs that share the same
+# characters before their SECOND underscore, and produce one combined
+# plot per group (all group members' curves overlaid, no modulus
+# lines). A Sample ID with fewer than two underscores is ignored for
+# grouping purposes (it still gets its own individual plot as usual).
+GROUPING = False
+
+# When True, additionally produce one combined plot containing every
+# successfully processed sample's curve (no modulus lines).
+PLOT_ALL = False
+
+# Title used for the PLOT_ALL combined plot (there's no shared ID
+# substring across every sample to derive a title from automatically).
+PLOT_ALL_TITLE = "All Samples"
+
 # ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
 # brief's "definition of done"):
@@ -103,11 +118,34 @@ MODULUS_LINE_WIDTH = 1.5
 #    literal wording.
 #  - Curve style: line only, no per-point markers. A legend is included
 #    identifying the curve, modulus line, yield point, and UTS point.
-#  - Point markers: yield point is a green triangle ("^"), UTS point is
-#    a green square ("s").
+#  - Point markers: yield point is a green circle ("o"), UTS point is a
+#    green square ("s").
 #  - Point annotation: controlled by SHOW_POINT_LABELS in CONFIG —
 #    off by default (marked only), can be turned on to print numeric
-#    (strain, stress) values next to the yield/UTS markers.
+#    (strain, stress) values next to the yield/UTS markers. The UTS
+#    label sits to the upper right of its point, the yield label sits
+#    to the lower right of its point.
+#  - Grouping (GROUPING=True): Sample IDs sharing the same characters
+#    before their SECOND underscore are grouped and plotted together on
+#    one combined figure per group (group_key = the two underscore-
+#    delimited segments before that second underscore, e.g. "FL15_A"
+#    from "FL15_A_1"). A Sample ID with fewer than two underscores is
+#    excluded from grouping (no group plot involves it), but still gets
+#    its own individual plot. Individual per-sample plots are ALWAYS
+#    still produced regardless of GROUPING/PLOT_ALL.
+#  - PLOT_ALL=True additionally produces one figure with every
+#    successfully processed sample's curve, titled PLOT_ALL_TITLE from
+#    CONFIG (no shared ID substring to derive a title from
+#    automatically). GROUPING and PLOT_ALL are independent flags and
+#    may both be True in the same run.
+#  - Grouped/all-samples plot styling: NO modulus line is drawn (would
+#    be too cluttered with multiple samples). Each sample's curve gets
+#    a distinct color (matplotlib's default cycle) and its OWN legend
+#    entry (the Sample ID). Yield and UTS points are still plotted per
+#    sample (green circle / green square, same styling as individual
+#    plots) but share a single GENERIC legend entry each ("Yield
+#    point", "UTS point") rather than one per sample. Title for a group
+#    plot is that group's shared ID prefix (the group_key).
 #  - Figure settings: gridlines on, default matplotlib figsize (None ->
 #    matplotlib's own default), 150 DPI, modulus line width configurable
 #    via MODULUS_LINE_WIDTH — all editable via CONFIG.
@@ -213,6 +251,86 @@ def modulus_line_x_range(
     return x_start, x_end
 
 
+def group_key(sample_id: str) -> str | None:
+    """Return the characters before the SECOND underscore in sample_id, or None.
+
+    Returns None if sample_id has fewer than two underscores (ignored
+    for grouping purposes).
+    """
+    parts = sample_id.split("_")
+    if len(parts) < 3:
+        return None
+    return "_".join(parts[:2])
+
+
+def plot_combined(
+    title: str,
+    sample_points: list[tuple[str, pd.Series, pd.Series, float, float, float, float]],
+) -> plt.Figure:
+    """Build a combined figure overlaying multiple samples' curves and yield/UTS points.
+
+    sample_points is a list of (sample_id, strain, stress, yield_strain,
+    yield_stress, uts_strain, uts_stress) tuples. No modulus line is
+    drawn. Each curve gets its own legend entry (Sample ID); yield/UTS
+    points share one generic legend entry each across all samples.
+    """
+    fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
+
+    yield_labeled = False
+    uts_labeled = False
+    for sample_id, strain, stress, yield_strain, yield_stress, uts_strain, uts_stress in sample_points:
+        ax.plot(strain, stress, linestyle="-", label=sample_id)
+
+        ax.plot(
+            yield_strain,
+            yield_stress,
+            marker="o",
+            color="green",
+            linestyle="none",
+            label=None if yield_labeled else "Yield point",
+        )
+        yield_labeled = True
+
+        ax.plot(
+            uts_strain,
+            uts_stress,
+            marker="s",
+            color="green",
+            linestyle="none",
+            label=None if uts_labeled else "UTS point",
+        )
+        uts_labeled = True
+
+        if SHOW_POINT_LABELS:
+            ax.annotate(
+                f"({yield_strain:.5g}, {yield_stress:.5g})",
+                (yield_strain, yield_stress),
+                textcoords="offset points",
+                xytext=(6, -6),
+                ha="left",
+                va="top",
+            )
+            ax.annotate(
+                f"({uts_strain:.5g}, {uts_stress:.5g})",
+                (uts_strain, uts_stress),
+                textcoords="offset points",
+                xytext=(6, 6),
+                ha="left",
+                va="bottom",
+            )
+
+    ax.set_title(title)
+    ax.set_xlabel("Strain")
+    ax.set_ylabel("Stress [MPa]")
+    ax.set_xlim(X_MIN, X_MAX)
+    ax.set_ylim(Y_MIN, Y_MAX)
+    ax.grid(True)
+    ax.legend()
+
+    fig.tight_layout()
+    return fig
+
+
 def plot_sample(
     sample_id: str,
     strain: pd.Series,
@@ -240,7 +358,7 @@ def plot_sample(
     ax.plot(
         yield_strain,
         yield_stress,
-        marker="^",
+        marker="o",
         color="green",
         linestyle="none",
         label="Yield point",
@@ -259,13 +377,17 @@ def plot_sample(
             f"({yield_strain:.5g}, {yield_stress:.5g})",
             (yield_strain, yield_stress),
             textcoords="offset points",
-            xytext=(6, 6),
+            xytext=(6, -6),
+            ha="left",
+            va="top",
         )
         ax.annotate(
             f"({uts_strain:.5g}, {uts_stress:.5g})",
             (uts_strain, uts_stress),
             textcoords="offset points",
             xytext=(6, 6),
+            ha="left",
+            va="bottom",
         )
 
     ax.set_title(sample_id)
@@ -296,6 +418,7 @@ def run() -> None:
 
     log: list[str] = []
     plotted = 0
+    processed: list[tuple[str, pd.Series, pd.Series, float, float, float, float]] = []
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -349,6 +472,42 @@ def run() -> None:
         plt.close(fig)
         plotted += 1
 
+        processed.append(
+            (sample_id, strain, stress, yield_strain, yield_stress, uts_strain, uts_stress)
+        )
+
+    group_plots = 0
+    if GROUPING:
+        groups: dict[str, list[tuple[str, pd.Series, pd.Series, float, float, float, float]]] = {}
+        for entry in processed:
+            key = group_key(entry[0])
+            if key is None:
+                continue
+            groups.setdefault(key, []).append(entry)
+
+        for key, members in sorted(groups.items()):
+            if len(members) < 2:
+                continue
+            fig = plot_combined(key, members)
+            output_path = OUTPUT_DIR / f"{key}_group_plot_{timestamp}.png"
+            if output_path.exists():
+                raise FileExistsError(
+                    f"Refusing to overwrite existing output file: {output_path}"
+                )
+            fig.savefig(output_path)
+            plt.close(fig)
+            group_plots += 1
+
+    all_plot_written = False
+    if PLOT_ALL and processed:
+        fig = plot_combined(PLOT_ALL_TITLE, processed)
+        output_path = OUTPUT_DIR / f"all_samples_plot_{timestamp}.png"
+        if output_path.exists():
+            raise FileExistsError(f"Refusing to overwrite existing output file: {output_path}")
+        fig.savefig(output_path)
+        plt.close(fig)
+        all_plot_written = True
+
     print("\n--- Skipped / logged items ---")
     if log:
         for line in log:
@@ -357,7 +516,11 @@ def run() -> None:
         print("  (none)")
 
     print("\n--- Summary ---")
-    print(f"  Plots generated: {plotted}")
+    print(f"  Individual plots generated: {plotted}")
+    if GROUPING:
+        print(f"  Group plots generated: {group_plots}")
+    if PLOT_ALL:
+        print(f"  All-samples plot generated: {all_plot_written}")
     print(f"  Output folder: {OUTPUT_DIR}")
 
 
