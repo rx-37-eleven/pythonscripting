@@ -31,6 +31,7 @@ combine_csv_folder.py. It merely consumes their output files as input.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -145,7 +146,10 @@ PLOT_ALL_TITLE = "All Samples"
 #    sample (green circle / green square, same styling as individual
 #    plots) but share a single GENERIC legend entry each ("Yield
 #    point", "UTS point") rather than one per sample. Title for a group
-#    plot is that group's shared ID prefix (the group_key).
+#    plot is that group's shared ID prefix (the group_key). Legend
+#    order on combined plots is fixed: Yield point, UTS point, then
+#    each sample curve in ascending natural-sort order (numeric chunks
+#    compared as numbers, so "FL2" sorts before "FL10").
 #  - Figure settings: gridlines on, default matplotlib figsize (None ->
 #    matplotlib's own default), 150 DPI, modulus line width configurable
 #    via MODULUS_LINE_WIDTH — all editable via CONFIG.
@@ -251,6 +255,18 @@ def modulus_line_x_range(
     return x_start, x_end
 
 
+def natural_sort_key(sample_id: str) -> list:
+    """Split sample_id into text/number chunks so numbers sort numerically, not lexically.
+
+    e.g. "FL2" sorts before "FL10" (ascending, alphabetical for text
+    chunks and numeric for digit chunks).
+    """
+    return [
+        int(chunk) if chunk.isdigit() else chunk
+        for chunk in re.split(r"(\d+)", sample_id)
+    ]
+
+
 def group_key(sample_id: str) -> str | None:
     """Return the characters before the SECOND underscore in sample_id, or None.
 
@@ -276,30 +292,32 @@ def plot_combined(
     """
     fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
 
-    yield_labeled = False
-    uts_labeled = False
+    yield_handle = None
+    uts_handle = None
+    curve_handles: dict[str, object] = {}
     for sample_id, strain, stress, yield_strain, yield_stress, uts_strain, uts_stress in sample_points:
-        ax.plot(strain, stress, linestyle="-", label=sample_id)
+        (curve_handle,) = ax.plot(strain, stress, linestyle="-", label=sample_id)
+        curve_handles[sample_id] = curve_handle
 
-        ax.plot(
+        (point_handle,) = ax.plot(
             yield_strain,
             yield_stress,
             marker="o",
             color="green",
             linestyle="none",
-            label=None if yield_labeled else "Yield point",
         )
-        yield_labeled = True
+        if yield_handle is None:
+            yield_handle = point_handle
 
-        ax.plot(
+        (point_handle,) = ax.plot(
             uts_strain,
             uts_stress,
             marker="s",
             color="green",
             linestyle="none",
-            label=None if uts_labeled else "UTS point",
         )
-        uts_labeled = True
+        if uts_handle is None:
+            uts_handle = point_handle
 
         if SHOW_POINT_LABELS:
             ax.annotate(
@@ -325,7 +343,13 @@ def plot_combined(
     ax.set_xlim(X_MIN, X_MAX)
     ax.set_ylim(Y_MIN, Y_MAX)
     ax.grid(True)
-    ax.legend()
+
+    legend_handles = [yield_handle, uts_handle]
+    legend_labels = ["Yield point", "UTS point"]
+    for sample_id in sorted(curve_handles, key=natural_sort_key):
+        legend_handles.append(curve_handles[sample_id])
+        legend_labels.append(sample_id)
+    ax.legend(legend_handles, legend_labels)
 
     fig.tight_layout()
     return fig
