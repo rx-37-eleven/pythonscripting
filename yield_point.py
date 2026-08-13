@@ -5,7 +5,7 @@ Reads a zeroed stress-strain dataset (the output of zero_stress_strain.py:
 wide, alternating (strain, stress) column pairs per sample, Sample ID in
 row 1 of each stress column, header/units row in row 2, data from row 3,
 each sample's data starting at (0, 0)) plus that same run's summary
-stats CSV (for per-sample slope, joined on Sample ID).
+stats CSV (for per-sample Modulus (Slope), joined on Sample ID).
 
 For each sample:
   - Builds the 0.2% offset line: offset_stress(strain) = slope *
@@ -22,11 +22,11 @@ For each sample:
     sample's own zeroed data) - Yield Strain.
 
 A sample with zero or more than one sign change is logged as a warning
-and written with blank Yield Stress / Yield Strain / Plastic Strain to
+and written with blank Yield Strain / Yield Stress / Plastic Strain to
 Failure values, rather than guessing which crossing is correct.
 
 Writes one timestamped output CSV: yield_point_summary_<timestamp>.csv,
-columns: Sample ID, Yield Stress, Yield Strain, Plastic Strain to Failure.
+columns: Sample ID, Yield Strain, Yield Stress, Plastic Strain to Failure.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas.
@@ -53,7 +53,7 @@ ZEROED_INPUT_PATH = Path("zeroed_outputs.csv")
 
 # Path to the matching summary stats CSV (output of
 # zero_stress_strain.py's summary_stats_<timestamp>.csv) — used to look
-# up each sample's elastic-region Slope, joined on Sample ID.
+# up each sample's elastic-region Modulus (Slope), joined on Sample ID.
 SUMMARY_STATS_PATH = Path("summary_stats.csv")
 
 # Directory the output file is written into.
@@ -73,8 +73,9 @@ OFFSET = 0.002
 #    (0.002 = 0.2%), samples blank-padded to the longest sample.
 #  - Input location: CONFIG block (explicit paths), not CLI args or
 #    auto-discovery — matches this repo's existing script convention.
-#  - Slope source: read from the prior script's summary_stats CSV,
-#    joined on Sample ID — not re-derived by re-fitting.
+#  - Slope source: read from the prior script's summary_stats CSV
+#    "Modulus (Slope)" column, joined on Sample ID — not re-derived by
+#    re-fitting.
 #  - Intersection method: scan data points in increasing-strain order,
 #    diff = actual_stress - offset_line_stress, look for point-to-point
 #    sign changes. Exactly one sign change -> valid yield point,
@@ -82,14 +83,14 @@ OFFSET = 0.002
 #    then linearly interpolating the ACTUAL stress-strain curve
 #    (not the offset line) at that strain for Yield Stress. Zero sign
 #    changes OR more than one sign change -> logged as a warning, row
-#    written with blank Yield Stress / Yield Strain / Plastic Strain to
+#    written with blank Yield Strain / Yield Stress / Plastic Strain to
 #    Failure (multiple crossings are treated as ambiguous, the same as
 #    no crossing, rather than guessing which one is correct).
 #  - Plastic Strain to Failure = (last strain value in this script's
 #    own read of the sample's zeroed data) - Yield Strain — not read
 #    from the prior script's "Strain at Failure" stats column.
 #  - Output: CSV, yield_point_summary_<timestamp>.csv, columns "Sample
-#    ID", "Yield Stress", "Yield Strain", "Plastic Strain to Failure".
+#    ID", "Yield Strain", "Yield Stress", "Plastic Strain to Failure".
 #  - No plots — console logging of progress/warnings only.
 # =====================================================================
 
@@ -140,15 +141,15 @@ def load_sample(
 
 
 def load_slopes(summary_stats_path: Path) -> dict[str, float]:
-    """Read Sample ID -> Slope from the prior script's summary stats CSV."""
+    """Read Sample ID -> Modulus (Slope) from the prior script's summary stats CSV."""
     df = pd.read_csv(summary_stats_path)
-    if "Sample ID" not in df.columns or "Slope" not in df.columns:
+    if "Sample ID" not in df.columns or "Modulus (Slope)" not in df.columns:
         raise ValueError(
             f"Summary stats file '{summary_stats_path}' is missing required "
-            f"'Sample ID' and/or 'Slope' column(s)"
+            f"'Sample ID' and/or 'Modulus (Slope)' column(s)"
         )
     return {
-        str(row["Sample ID"]).strip(): float(row["Slope"])
+        str(row["Sample ID"]).strip(): float(row["Modulus (Slope)"])
         for _, row in df.iterrows()
     }
 
@@ -221,7 +222,7 @@ def run() -> None:
 
         if sample_id not in slopes:
             log.append(
-                f"SKIP '{sample_id}': no matching Slope found in "
+                f"SKIP '{sample_id}': no matching Modulus (Slope) found in "
                 f"'{SUMMARY_STATS_PATH}'"
             )
             continue
@@ -242,8 +243,8 @@ def run() -> None:
             rows.append(
                 {
                     "Sample ID": sample_id,
-                    "Yield Stress": None,
                     "Yield Strain": None,
+                    "Yield Stress": None,
                     "Plastic Strain to Failure": None,
                 }
             )
@@ -253,8 +254,8 @@ def run() -> None:
         rows.append(
             {
                 "Sample ID": sample_id,
-                "Yield Stress": yield_stress,
                 "Yield Strain": yield_strain,
+                "Yield Stress": yield_stress,
                 "Plastic Strain to Failure": last_strain - yield_strain,
             }
         )
@@ -279,7 +280,7 @@ def run() -> None:
 
     output_df = pd.DataFrame(
         rows,
-        columns=["Sample ID", "Yield Stress", "Yield Strain", "Plastic Strain to Failure"],
+        columns=["Sample ID", "Yield Strain", "Yield Stress", "Plastic Strain to Failure"],
     )
     output_df.to_csv(output_path, index=False)
 

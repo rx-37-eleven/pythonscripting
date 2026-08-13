@@ -24,8 +24,8 @@ Writes two timestamped output CSVs (same run timestamp, to the second):
     input (Sample ID in row 1, header/units row preserved in row 2,
     shorter samples blank-padded to the longest sample's length).
   - summary_stats_<timestamp>.csv — one row per sample: Sample ID,
-    Slope, Intercept, R², Max Stress, Strain at Max Stress, Strain at
-    Failure, Stress at Failure.
+    Modulus (Slope), x-intercept, y-intercept, R^2, Strain at Max
+    Stress, Max Stress, Strain at Failure, Stress at Failure.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas (also used to read/write CSVs).
@@ -88,9 +88,13 @@ FIT_POINTS = 100
 #    Sample ID per pair, row 2 = the input's own header/units row
 #    copied through unchanged, data from row 3, shorter samples
 #    blank-padded (via NaN -> empty cell) to the longest sample.
-#  - Output 2: CSV, columns in order: "Sample ID", "Slope", "Intercept",
-#    "R²", "Max Stress", "Strain at Max Stress", "Strain at Failure",
-#    "Stress at Failure".
+#  - Output 2: CSV, columns in order: "Sample ID", "Modulus (Slope)",
+#    "x-intercept", "y-intercept", "R^2", "Strain at Max Stress",
+#    "Max Stress", "Strain at Failure", "Stress at Failure". x-intercept
+#    is the fitted line's strain-axis crossing (-intercept/slope) — the
+#    value actually used to shift strain during zeroing. y-intercept is
+#    the raw fitted intercept from np.polyfit (stress value at
+#    strain=0).
 #  - Both outputs share one run timestamp (to the second) in their
 #    filenames and never overwrite an existing file of the same name.
 #  - Interface: CONFIG block (edited before running), matching this
@@ -190,13 +194,16 @@ def summarize_sample(
     strain_at_failure = zeroed_strain.iloc[-1]
     stress_at_failure = zeroed_stress.iloc[-1]
 
+    x_intercept = -intercept / slope
+
     return {
         "Sample ID": sample_id,
-        "Slope": slope,
-        "Intercept": intercept,
-        "R²": r_squared,
-        "Max Stress": max_stress,
+        "Modulus (Slope)": slope,
+        "x-intercept": x_intercept,
+        "y-intercept": intercept,
+        "R^2": r_squared,
         "Strain at Max Stress": strain_at_max,
+        "Max Stress": max_stress,
         "Strain at Failure": strain_at_failure,
         "Stress at Failure": stress_at_failure,
     }
@@ -312,11 +319,12 @@ def run() -> None:
         summary_rows,
         columns=[
             "Sample ID",
-            "Slope",
-            "Intercept",
-            "R²",
-            "Max Stress",
+            "Modulus (Slope)",
+            "x-intercept",
+            "y-intercept",
+            "R^2",
             "Strain at Max Stress",
+            "Max Stress",
             "Strain at Failure",
             "Stress at Failure",
         ],

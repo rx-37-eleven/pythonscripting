@@ -46,7 +46,7 @@ OUTPUT_BASENAME = "multiplied_output"
 MAX_OUTPUT_BASENAME = "max_stress"
 
 # Whether the max-stress output file gets a header row
-# ("pair,max_stress,strain_at_max_stress"). Set to False to write data
+# ("pair,strain_at_max_stress,max_stress"). Set to False to write data
 # rows only, with no logic changes required.
 MAX_OUTPUT_INCLUDE_HEADER = True
 
@@ -450,11 +450,12 @@ def write_max_stress_output(combined: pd.DataFrame, timestamp: str) -> Path | No
     Selects only combined's stress columns (row-2 label == ROW2_LABEL_BASE,
     and — belt and braces — row-1 name not ending in PAIR_SUFFIX), then
     writes one row per pair, in the order those columns appear in
-    combined: pair name, NaN-skipping max stress, and the strain value
-    from that SAME ROW (found via idxmax on the stress column, then a
-    positional lookup into the paired _ex/strain column — never a
-    separate max/min of the strain column). On a tie for the max,
-    idxmax returns the first occurrence, so that's the row used.
+    combined: pair name, then the strain value from that SAME ROW
+    (found via idxmax on the stress column, then a positional lookup
+    into the paired _ex/strain column — never a separate max/min of the
+    strain column), then the NaN-skipping max stress itself. On a tie
+    for the max, idxmax returns the first occurrence, so that's the row
+    used.
 
     A stress column that is entirely NaN has no idxmax, so that pair's
     row is skipped (logged). A missing paired strain column still
@@ -502,7 +503,7 @@ def write_max_stress_output(combined: pd.DataFrame, timestamp: str) -> Path | No
                 if pd.isna(strain_at_max):
                     strain_at_max = None
 
-            rows.append((name, max_stress, strain_at_max))
+            rows.append((name, strain_at_max, max_stress))
 
         if not rows:
             print("\nNo usable stress data — skipping max-stress output file.")
@@ -515,7 +516,7 @@ def write_max_stress_output(combined: pd.DataFrame, timestamp: str) -> Path | No
             )
 
         max_df = pd.DataFrame(
-            rows, columns=["pair", "max_stress", "strain_at_max_stress"]
+            rows, columns=["pair", "strain_at_max_stress", "max_stress"]
         )
         max_df.to_csv(max_output_path, index=False, header=MAX_OUTPUT_INCLUDE_HEADER)
         return max_output_path
