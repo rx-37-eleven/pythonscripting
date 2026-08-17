@@ -37,7 +37,7 @@ OUTPUT_DIR = Path("outputs")
 # Filename pattern for this script's own output, excluded from input
 # discovery so re-running on the same folder doesn't ingest a prior
 # combined output as input.
-OUTPUT_FILENAME_PATTERN = "data_combined_*.csv"
+OUTPUT_FILENAME_PATTERN = "DataCombined_*.csv"
 
 # ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
@@ -72,7 +72,7 @@ OUTPUT_FILENAME_PATTERN = "data_combined_*.csv"
 #    in row 1 (data from row 2) — not the multi-row-header convention
 #    used by the zeroing/yield-point scripts earlier in this series.
 #  - Output row order: sorted by Sample ID (string sort).
-#  - Output filename: data_combined_<YYYYMMDD_HHMMSS>.csv, matching the
+#  - Output filename: DataCombined_<YYYYMMDD_HHMMSS>.csv, matching the
 #    earlier scripts' timestamp-to-the-second convention. Never
 #    overwrites an existing file of the same name.
 #  - Interface: CONFIG block (edited before running), matching the
@@ -208,7 +208,7 @@ def run() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    output_path = OUTPUT_DIR / f"data_combined_{timestamp}.csv"
+    output_path = OUTPUT_DIR / f"DataCombined_{timestamp}.csv"
     if output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing output file: {output_path}")
 
