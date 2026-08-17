@@ -12,18 +12,19 @@ For each sample:
     (strain - OFFSET), where slope is the sample's elastic-region slope
     from the summary stats file.
   - Scans the sample's data in order of increasing strain, computing
-    diff = actual_stress - offset_stress at each point, looking for the
-    single point-to-point sign change (the offset line crossing the
-    actual curve).
+    diff = actual_stress - offset_stress at each point, looking for
+    point-to-point sign changes (the offset line crossing the actual
+    curve). If more than one crossing is found, the LAST one (highest
+    strain) is used.
   - Linearly interpolates the ACTUAL data curve at the intersection
     strain (found by interpolating the diff values to zero) to report
     Yield Strain and Yield Stress.
   - Computes Plastic Strain to Failure = (last strain value in the
     sample's own zeroed data) - Yield Strain.
 
-A sample with zero or more than one sign change is logged as a warning
-and written with blank Yield Strain / Yield Stress / Plastic Strain to
-Failure values, rather than guessing which crossing is correct.
+A sample with zero sign changes (the offset line never crosses the
+curve) is logged as a warning and written with blank Yield Strain /
+Yield Stress / Plastic Strain to Failure values.
 
 Writes one timestamped output CSV: yield_point_summary_<timestamp>.csv,
 columns: Sample ID, Yield Strain, Yield Stress, Plastic Strain to Failure.
@@ -78,14 +79,13 @@ OFFSET = 0.002
 #    re-fitting.
 #  - Intersection method: scan data points in increasing-strain order,
 #    diff = actual_stress - offset_line_stress, look for point-to-point
-#    sign changes. Exactly one sign change -> valid yield point,
+#    sign changes. One or more sign changes -> valid yield point, using
+#    the LAST crossing (highest strain) when more than one is found,
 #    resolved by linearly interpolating the diff to zero for strain,
 #    then linearly interpolating the ACTUAL stress-strain curve
 #    (not the offset line) at that strain for Yield Stress. Zero sign
-#    changes OR more than one sign change -> logged as a warning, row
-#    written with blank Yield Strain / Yield Stress / Plastic Strain to
-#    Failure (multiple crossings are treated as ambiguous, the same as
-#    no crossing, rather than guessing which one is correct).
+#    changes -> logged as a warning, row written with blank Yield
+#    Strain / Yield Stress / Plastic Strain to Failure.
 #  - Plastic Strain to Failure = (last strain value in this script's
 #    own read of the sample's zeroed data) - Yield Strain — not read
 #    from the prior script's "Strain at Failure" stats column.
@@ -157,10 +157,11 @@ def load_slopes(summary_stats_path: Path) -> dict[str, float]:
 def find_yield_point(
     strain: pd.Series, stress: pd.Series, slope: float, offset: float
 ) -> tuple[float, float] | None:
-    """Find the 0.2%-offset yield point via a single sign-change crossing.
+    """Find the 0.2%-offset yield point via a sign-change crossing.
 
-    Returns (yield_strain, yield_stress), or None if zero or more than
-    one sign change is found (ambiguous — caller should log and skip).
+    If more than one point-to-point sign change is found, the LAST one
+    (highest strain) is used. Returns (yield_strain, yield_stress), or
+    None if no sign change is found at all (caller should log and skip).
     """
     x = strain.to_numpy(dtype=float)
     y = stress.to_numpy(dtype=float)
@@ -175,10 +176,10 @@ def find_yield_point(
         elif d0 * d1 < 0:
             crossings.append(i)
 
-    if len(crossings) != 1:
+    if not crossings:
         return None
 
-    i = crossings[0]
+    i = crossings[-1]
     if diff[i] == 0:
         return float(x[i]), float(y[i])
 
@@ -237,8 +238,8 @@ def run() -> None:
 
         if yield_point is None:
             log.append(
-                f"WARNING '{sample_id}': no unambiguous offset-line crossing found "
-                f"(zero or multiple sign changes) — writing blank yield values"
+                f"WARNING '{sample_id}': offset line never crosses the actual "
+                f"curve — writing blank yield values"
             )
             rows.append(
                 {
