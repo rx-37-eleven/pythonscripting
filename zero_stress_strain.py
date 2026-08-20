@@ -28,7 +28,8 @@ Writes two timestamped output CSVs (same run timestamp, to the second):
     Stress, Max Stress, Strain at Failure, Stress at Failure.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
-Non-stdlib dependency: pandas (also used to read/write CSVs).
+Non-stdlib dependencies: pandas (also used to read/write CSVs), and
+matplotlib if PLOT_SAMPLES is turned on.
 
 This script is standalone — it does not import or depend on any other
 script in this repository.
@@ -39,6 +40,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -54,6 +56,31 @@ OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/
 
 # Number of leading data points used to fit each sample's line.
 FIT_POINTS = 200
+
+# Whether to generate a stress-strain curve plot for each sample: the
+# full zeroed curve in black, with the points used to fit that sample's
+# line overlaid in red.
+PLOT_SAMPLES = False
+
+# Line thickness (points) for each sample's zeroed stress-strain curve
+# (black).
+CURVE_LINE_WIDTH = 1.0
+
+# Line thickness (points) for the fit-window points overlay — i.e. the
+# points used to compute the fitted line (red).
+FIT_POINTS_LINE_WIDTH = 1.0
+
+# Send each plot to an interactive Spyder plot window.
+SHOW_PLOTS = False
+
+# Save each plot as a PNG (<sampleID>_zeroed_curve_plot_<timestamp>.png)
+# in PLOT_OUTPUT_DIR. SHOW_PLOTS and SAVE_PLOTS are independent — either
+# or both may be turned on.
+SAVE_PLOTS = False
+
+# Directory PNG plot files are written into (only used when
+# SAVE_PLOTS=True).
+PLOT_OUTPUT_DIR = OUTPUT_DIR
 
 # ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
@@ -179,6 +206,42 @@ def zero_sample(
     return zeroed_strain, zeroed_stress
 
 
+def plot_sample_curve(
+    sample_id: str,
+    zeroed_strain: pd.Series,
+    zeroed_stress: pd.Series,
+    n_fit: int,
+) -> plt.Figure:
+    """Plot one sample's full zeroed curve (black) with its fit-window points overlaid (red).
+
+    zeroed_strain/zeroed_stress include the prepended (0, 0) point at
+    index 0, so the fit-window points (the first n_fit rows of the
+    sample's original data) are at indices 1..n_fit.
+    """
+    fig, ax = plt.subplots()
+    ax.plot(
+        zeroed_strain,
+        zeroed_stress,
+        color="black",
+        linewidth=CURVE_LINE_WIDTH,
+        label="Zeroed stress-strain curve",
+    )
+    ax.plot(
+        zeroed_strain.iloc[1 : 1 + n_fit],
+        zeroed_stress.iloc[1 : 1 + n_fit],
+        color="red",
+        linewidth=FIT_POINTS_LINE_WIDTH,
+        label="Fit points",
+    )
+    ax.set_title(sample_id)
+    ax.set_xlabel("Strain")
+    ax.set_ylabel("Stress")
+    ax.grid(True)
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
+
 def summarize_sample(
     sample_id: str,
     slope: float,
@@ -256,6 +319,11 @@ def run() -> None:
     processed: list[tuple[str, pd.Series, pd.Series]] = []
     summary_rows: list[dict] = []
     log: list[str] = []
+    plots_generated = 0
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if PLOT_SAMPLES and SAVE_PLOTS:
+        PLOT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for sample_id, strain_idx, stress_idx in samples:
         strain, stress = load_sample(df_raw, strain_idx, stress_idx)
@@ -291,6 +359,19 @@ def run() -> None:
             summarize_sample(sample_id, slope, intercept, r_squared, zeroed_strain, zeroed_stress)
         )
 
+        if PLOT_SAMPLES:
+            fig = plot_sample_curve(sample_id, zeroed_strain, zeroed_stress, n_fit)
+            if SAVE_PLOTS:
+                plot_path = PLOT_OUTPUT_DIR / f"{sample_id}_zeroed_curve_plot_{timestamp}.png"
+                if plot_path.exists():
+                    raise FileExistsError(f"Refusing to overwrite existing output file: {plot_path}")
+                fig.savefig(plot_path)
+            if SHOW_PLOTS:
+                plt.show(block=False)
+            else:
+                plt.close(fig)
+            plots_generated += 1
+
     print("\n--- Skipped / logged items ---")
     if log:
         for line in log:
@@ -302,7 +383,6 @@ def run() -> None:
         print("\nNo samples were successfully processed — no output files written.")
         return
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     zeroed_path = OUTPUT_DIR / f"zeroed_outputs_{timestamp}.csv"
@@ -336,6 +416,8 @@ def run() -> None:
     print(f"  Samples skipped: {len(samples) - len(processed)}")
     print(f"  Zeroed output file: {zeroed_path}")
     print(f"  Summary stats file: {summary_path}")
+    if PLOT_SAMPLES:
+        print(f"  Plots generated: {plots_generated} (shown: {SHOW_PLOTS}, saved: {SAVE_PLOTS})")
 
 
 if __name__ == "__main__":
