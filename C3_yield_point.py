@@ -1,7 +1,7 @@
 """
 0.2% offset yield point script.
 
-Reads a zeroed stress-strain dataset (the output of zero_stress_strain.py:
+Reads a zeroed stress-strain dataset (the output of C2_zero_stress_strain.py:
 wide, alternating (strain, stress) column pairs per sample, Sample ID in
 row 1 of each stress column, header/units row in row 2, data from row 3,
 each sample's data starting at (0, 0)) plus that same run's summary
@@ -33,7 +33,7 @@ Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas.
 
 This script is standalone — it does not import or depend on any other
-script in this repository, including zero_stress_strain.py. It merely
+script in this repository, including C2_zero_stress_strain.py. It merely
 consumes that script's output files as input.
 """
 
@@ -48,12 +48,12 @@ import pandas as pd
 # CONFIG — edit these values, then press Run in Spyder.
 # =====================================================================
 
-# Path to the zeroed dataset CSV (output of zero_stress_strain.py's
+# Path to the zeroed dataset CSV (output of C2_zero_stress_strain.py's
 # zeroed_outputs_<timestamp>.csv).
 ZEROED_INPUT_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/zeroed_outputs_20260819_190935.csv')
 
 # Path to the matching summary stats CSV (output of
-# zero_stress_strain.py's summary_stats_<timestamp>.csv) — used to look
+# C2_zero_stress_strain.py's summary_stats_<timestamp>.csv) — used to look
 # up each sample's elastic-region Slope, joined on Sample ID.
 SUMMARY_STATS_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/summary_stats_20260819_190935.csv')
 
@@ -68,7 +68,7 @@ OFFSET = 0.002
 # brief's "definition of done"):
 #
 #  - Input structure: confirmed directly (this script's author also
-#    wrote zero_stress_strain.py) — wide/alternating (strain, stress)
+#    wrote C2_zero_stress_strain.py) — wide/alternating (strain, stress)
 #    column pairs, Sample ID in row 1 of each stress column, units row
 #    in row 2, data from row 3, strain stored as decimal fractions
 #    (0.002 = 0.2%), samples blank-padded to the longest sample.

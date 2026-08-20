@@ -11,7 +11,7 @@ than filled in.
 
 Two additional CSV inputs are merged in alongside the folder's files:
   - GEOMETRY_PATH — a geometry file (the same kind of file used as the
-    static lookup in paired_csv_multiplier.py / C1), merged the exact
+    static lookup in C1_paired_csv_multiplier.py / C1), merged the exact
     same way as every other input file (first column = Sample ID, full
     outer join). It typically lives outside INPUT_FOLDER, so it's given
     its own configured path rather than relying on folder discovery.
@@ -57,7 +57,7 @@ OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/
 OUTPUT_FILENAME_PATTERN = "data_combined_*.csv"
 
 # Path to the geometry CSV — defaults to the same file used as
-# STATIC_LOOKUP_PATH in paired_csv_multiplier.py (C1), but can be
+# STATIC_LOOKUP_PATH in C1_paired_csv_multiplier.py (C1), but can be
 # pointed anywhere. Merged in exactly like every other input file
 # (first column = Sample ID, full outer join).
 GEOMETRY_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/Geometry/Geometry_20260818.csv')
