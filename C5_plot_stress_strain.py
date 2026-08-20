@@ -1,11 +1,11 @@
 """
 Per-sample stress-strain plotting script.
 
-Reads a zeroed stress-strain dataset (the output of zero_stress_strain.py:
+Reads a zeroed stress-strain dataset (the output of C2_zero_stress_strain.py:
 wide, alternating (strain, stress) column pairs per sample, Sample ID in
 row 1 of each stress column, header/units row in row 2, data from row 3,
 each sample's data starting at (0, 0)) plus a combined results file (the
-output of combine_csv_folder.py: one row per Sample ID, columns merged
+output of C4_combine_csv_folder.py: one row per Sample ID, columns merged
 in from the earlier scripts' summary outputs — Modulus (Slope), Yield
 Strain, Yield Stress, Strain at Max Stress, Max Stress, etc.).
 
@@ -25,8 +25,8 @@ Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependencies: pandas, matplotlib.
 
 This script is standalone — it does not import or depend on any other
-script in this repository, including zero_stress_strain.py or
-combine_csv_folder.py. It merely consumes their output files as input.
+script in this repository, including C2_zero_stress_strain.py or
+C4_combine_csv_folder.py. It merely consumes their output files as input.
 """
 
 from __future__ import annotations
@@ -45,11 +45,11 @@ import pandas as pd
 # CONFIG — edit these values, then press Run in Spyder.
 # =====================================================================
 
-# Path to the zeroed dataset CSV (output of zero_stress_strain.py's
+# Path to the zeroed dataset CSV (output of C2_zero_stress_strain.py's
 # zeroed_outputs_<timestamp>.csv).
 ZEROED_INPUT_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/zeroed_outputs_20260819_190935.csv')
 
-# Path to the combined results CSV (output of combine_csv_folder.py's
+# Path to the combined results CSV (output of C4_combine_csv_folder.py's
 # DataCombined_<timestamp>.csv) — supplies Modulus (Slope), Yield
 # Strain, Yield Stress, Strain at Max Stress, and Max Stress per sample.
 COMBINED_INPUT_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/data_combined_20260819_192132.csv')
@@ -94,7 +94,7 @@ PLOT_ALL_TITLE = "All Samples"
 # brief's "definition of done"):
 #
 #  - Input structures: confirmed directly (this script's author also
-#    wrote zero_stress_strain.py and combine_csv_folder.py) — zeroed
+#    wrote C2_zero_stress_strain.py and C4_combine_csv_folder.py) — zeroed
 #    file is wide/alternating (strain, stress) pairs with Sample ID in
 #    row 1 of the stress column, units row in row 2, data from row 3.
 #    Combined file is long/tidy, one row per Sample ID, with columns

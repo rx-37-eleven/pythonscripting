@@ -2,7 +2,7 @@
 Properties-vs-Gray-Value plotting and regression script.
 
 Reads a combined properties CSV (the same kind of file produced by
-combine_csv_folder.py / C4: one row per Sample ID, with a "Gray Value"
+C4_combine_csv_folder.py / C4: one row per Sample ID, with a "Gray Value"
 column among the others). For every OTHER column that contains numeric
 data (excluding X_COLUMN itself and the columns listed in
 IGNORE_COLUMNS), builds a scatterplot of that column (y-axis) against
@@ -15,7 +15,7 @@ Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependencies: pandas, numpy, matplotlib.
 
 This script is standalone — it does not import or depend on any other
-script in this repository. It merely consumes combine_csv_folder.py's
+script in this repository. It merely consumes C4_combine_csv_folder.py's
 output file as input.
 """
 
@@ -36,7 +36,7 @@ import pandas as pd
 # =====================================================================
 
 # Path to the input CSV — a combined-output file of the same type
-# produced by combine_csv_folder.py (C4), with a "Gray Value" column
+# produced by C4_combine_csv_folder.py (C4), with a "Gray Value" column
 # among its others.
 INPUT_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/data_combined_20260820_141442.csv')
 
@@ -91,7 +91,7 @@ FIGSIZE = None
 #  - Plot styling: one figure per y-column, points plus a fit line
 #    spanning the plotted data's x-range, gridlines on, legend with the
 #    fit equation and R^2. No fixed axis limits across plots (unlike
-#    plot_stress_strain.py) since each column has its own unit/scale.
+#    C5_plot_stress_strain.py) since each column has its own unit/scale.
 #  - Output: one PNG per plotted column
 #    (<column>_vs_<X_COLUMN>_plot_<timestamp>.png; a literal "/" in a
 #    column name is replaced with "-" so it can't be misread as a path
