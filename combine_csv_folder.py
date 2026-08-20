@@ -29,10 +29,10 @@ import pandas as pd
 # =====================================================================
 
 # Folder to scan (top level only, not subfolders) for input CSV files.
-INPUT_FOLDER = Path("input_csvs")
+INPUT_FOLDER = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code4_AInputs')
 
 # Directory the combined output file is written into.
-OUTPUT_DIR = Path("outputs")
+OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs')
 
 # Filename pattern for this script's own output, excluded from input
 # discovery so re-running on the same folder doesn't ingest a prior
