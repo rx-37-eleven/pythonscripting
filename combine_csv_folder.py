@@ -141,6 +141,26 @@ def load_file(path: Path) -> pd.DataFrame:
     return df
 
 
+def drop_blank_ids(df: pd.DataFrame, path: Path, log: list[str]) -> pd.DataFrame:
+    """Drop rows whose Sample ID is blank (NaN, empty, or whitespace-only) and log a warning.
+
+    A blank Sample ID (e.g. from a stray trailing blank line in a source
+    CSV) can't be merged or matched downstream — carrying it through as
+    a NaN key mixes types in the Sample ID column and breaks any plain
+    string sort/comparison done on it later (by this script or others
+    downstream), so it's dropped here instead.
+    """
+    blank = df["Sample ID"].fillna("").astype(str).str.strip() == ""
+    count = int(blank.sum())
+    if count:
+        log.append(
+            f"WARNING '{path.name}': {count} row(s) with a blank Sample ID "
+            f"dropped (e.g. a stray blank line) — not merged into the output"
+        )
+        df = df[~blank].reset_index(drop=True)
+    return df
+
+
 def report_duplicate_ids(df: pd.DataFrame, path: Path, log: list[str]) -> None:
     """Log a warning for any Sample ID that appears more than once in df. Rows are kept, not removed."""
     counts = df["Sample ID"].value_counts()
@@ -307,11 +327,17 @@ def run() -> None:
             log.append(f"SKIP '{path.name}': {exc}")
             continue
 
+        df = drop_blank_ids(df, path, log)
+        if df.empty:
+            log.append(f"SKIP '{path.name}': no rows remain after dropping blank Sample ID row(s)")
+            continue
+
         report_duplicate_ids(df, path, log)
         loaded.append((path.stem, df))
 
     print(f"\nLoading geometry file '{GEOMETRY_PATH}'...")
     geometry_df = load_file(GEOMETRY_PATH)
+    geometry_df = drop_blank_ids(geometry_df, GEOMETRY_PATH, log)
     report_duplicate_ids(geometry_df, GEOMETRY_PATH, log)
     loaded.append((GEOMETRY_PATH.stem, geometry_df))
 
