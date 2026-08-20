@@ -9,6 +9,22 @@ source file), columns from every file aligned by that ID. Cells with no
 value for a given Sample ID/column combination are left blank rather
 than filled in.
 
+Two additional CSV inputs are merged in alongside the folder's files:
+  - GEOMETRY_PATH — a geometry file (the same kind of file used as the
+    static lookup in paired_csv_multiplier.py / C1), merged the exact
+    same way as every other input file (first column = Sample ID, full
+    outer join). It typically lives outside INPUT_FOLDER, so it's given
+    its own configured path rather than relying on folder discovery.
+  - GRAYVALUE_PATH — a gray value file. Unlike the geometry file, this
+    is NOT merged by Sample ID directly. For each sample already present
+    in the combined output (e.g. "VT19_1_2"), a Gray Value ID is derived
+    by dropping the sample ID's trailing "_<number>" suffix (e.g.
+    "VT19_1"), then looked up in this file to pull in three columns:
+    Gray Value ID, Gray Value, GV Std Dev. If the ID can't be derived
+    (no trailing "_<number>") or has no match, those three columns are
+    left blank for that sample — no new rows are ever added from this
+    file.
+
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas.
 
@@ -19,6 +35,7 @@ script in this repository.
 from __future__ import annotations
 
 import fnmatch
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +55,22 @@ OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/
 # discovery so re-running on the same folder doesn't ingest a prior
 # combined output as input.
 OUTPUT_FILENAME_PATTERN = "data_combined_*.csv"
+
+# Path to the geometry CSV — defaults to the same file used as
+# STATIC_LOOKUP_PATH in paired_csv_multiplier.py (C1), but can be
+# pointed anywhere. Merged in exactly like every other input file
+# (first column = Sample ID, full outer join).
+GEOMETRY_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/Geometry/Geometry_20260818.csv')
+
+# Path to the gray value CSV. See the module docstring above for how
+# each sample's Gray Value ID is derived and looked up.
+GRAYVALUE_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/grayvalue.csv')
+
+# Column names expected in GRAYVALUE_PATH — used, unchanged, as the
+# three new output column names.
+GRAYVALUE_ID_COLUMN = "Gray Value ID"
+GRAYVALUE_VALUE_COLUMN = "Gray Value"
+GRAYVALUE_STDDEV_COLUMN = "GV Std Dev"
 
 # ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
@@ -165,14 +198,104 @@ def merge_all(loaded: list[tuple[str, pd.DataFrame]], log: list[str]) -> pd.Data
     return combined
 
 
+GRAY_VALUE_ID_PATTERN = re.compile(r"^(.+)_\d+$")
+
+
+def derive_gray_value_id(sample_id: str) -> str | None:
+    """Derive a sample's Gray Value ID by dropping its trailing "_<number>" suffix.
+
+    e.g. "VT19_1_2" -> "VT19_1". Returns None if sample_id has no
+    trailing underscore-number suffix to drop.
+    """
+    match = GRAY_VALUE_ID_PATTERN.match(sample_id)
+    return match.group(1) if match else None
+
+
+def load_grayvalue_lookup(path: Path) -> tuple[dict[str, tuple[object, object]], set[str]]:
+    """Read the gray value CSV into {Gray Value ID: (Gray Value, GV Std Dev)}.
+
+    Returns the lookup dict plus the set of Gray Value IDs that appear
+    more than once (ambiguous — any sample matching one of these is left
+    blank rather than guessing which row to use).
+    """
+    df = pd.read_csv(path, dtype=str)
+    missing = [
+        c
+        for c in (GRAYVALUE_ID_COLUMN, GRAYVALUE_VALUE_COLUMN, GRAYVALUE_STDDEV_COLUMN)
+        if c not in df.columns
+    ]
+    if missing:
+        raise ValueError(f"Gray value file '{path}' is missing required column(s): {missing}")
+
+    counts: dict[str, int] = {}
+    lookup: dict[str, tuple[object, object]] = {}
+    for _, row in df.iterrows():
+        gray_id = row[GRAYVALUE_ID_COLUMN]
+        if pd.isna(gray_id) or str(gray_id).strip() == "":
+            continue
+        gray_id = str(gray_id).strip()
+        counts[gray_id] = counts.get(gray_id, 0) + 1
+        lookup[gray_id] = (row[GRAYVALUE_VALUE_COLUMN], row[GRAYVALUE_STDDEV_COLUMN])
+
+    duplicate_ids = {gray_id for gray_id, count in counts.items() if count > 1}
+    return lookup, duplicate_ids
+
+
+def build_gray_value_columns(
+    sample_ids: pd.Series,
+    lookup: dict[str, tuple[object, object]],
+    duplicate_ids: set[str],
+    log: list[str],
+) -> tuple[list, list, list]:
+    """Derive each sample's Gray Value ID and look up its Gray Value / GV Std Dev.
+
+    Returns three parallel lists (Gray Value ID, Gray Value, GV Std Dev),
+    one entry per row in sample_ids, in the same order. A sample is left
+    blank in all three lists if its Gray Value ID can't be derived, is
+    ambiguous in the lookup file, or has no match there.
+    """
+    gray_ids: list = []
+    gray_values: list = []
+    gray_stddevs: list = []
+
+    for sample_id in sample_ids:
+        derived_id = derive_gray_value_id(str(sample_id))
+        if derived_id is None:
+            log.append(
+                f"  '{sample_id}': Gray Value ID could not be derived (no "
+                f"trailing \"_<number>\") — leaving Gray Value columns blank"
+            )
+        elif derived_id in duplicate_ids:
+            log.append(
+                f"  '{sample_id}': derived Gray Value ID '{derived_id}' is "
+                f"ambiguous (appears more than once in the gray value file) "
+                f"— leaving Gray Value columns blank"
+            )
+            derived_id = None
+        elif derived_id not in lookup:
+            log.append(
+                f"  '{sample_id}': derived Gray Value ID '{derived_id}' not "
+                f"found in the gray value file — leaving Gray Value columns blank"
+            )
+            derived_id = None
+
+        if derived_id is None:
+            gray_ids.append(None)
+            gray_values.append(None)
+            gray_stddevs.append(None)
+        else:
+            value, stddev = lookup[derived_id]
+            gray_ids.append(derived_id)
+            gray_values.append(value)
+            gray_stddevs.append(stddev)
+
+    return gray_ids, gray_values, gray_stddevs
+
+
 def run() -> None:
     print(f"Scanning '{INPUT_FOLDER}' for CSV files...")
     csv_files = discover_csv_files(INPUT_FOLDER, OUTPUT_FILENAME_PATTERN)
     print(f"  found {len(csv_files)} CSV file(s): {[p.name for p in csv_files]}")
-
-    if not csv_files:
-        print("\nNo CSV files found in the input folder — nothing to combine.")
-        return
 
     log: list[str] = []
     loaded: list[tuple[str, pd.DataFrame]] = []
@@ -187,19 +310,30 @@ def run() -> None:
         report_duplicate_ids(df, path, log)
         loaded.append((path.stem, df))
 
+    print(f"\nLoading geometry file '{GEOMETRY_PATH}'...")
+    geometry_df = load_file(GEOMETRY_PATH)
+    report_duplicate_ids(geometry_df, GEOMETRY_PATH, log)
+    loaded.append((GEOMETRY_PATH.stem, geometry_df))
+
+    combined = merge_all(loaded, log)
+    combined = combined.sort_values("Sample ID", kind="stable").reset_index(drop=True)
+
+    print(f"\nLoading gray value file '{GRAYVALUE_PATH}'...")
+    gray_lookup, gray_duplicate_ids = load_grayvalue_lookup(GRAYVALUE_PATH)
+    gray_ids, gray_values, gray_stddevs = build_gray_value_columns(
+        combined["Sample ID"], gray_lookup, gray_duplicate_ids, log
+    )
+    combined[GRAYVALUE_ID_COLUMN] = gray_ids
+    combined[GRAYVALUE_VALUE_COLUMN] = gray_values
+    combined[GRAYVALUE_STDDEV_COLUMN] = gray_stddevs
+    matched = sum(1 for gid in gray_ids if gid is not None)
+
     print("\n--- Skipped / logged items ---")
     if log:
         for line in log:
             print(f"  {line}")
     else:
         print("  (none)")
-
-    if not loaded:
-        print("\nNo usable CSV files — no output file written.")
-        return
-
-    combined = merge_all(loaded, log)
-    combined = combined.sort_values("Sample ID", kind="stable").reset_index(drop=True)
 
     # Reorder columns: Sample ID first, everything else as produced by the merges.
     other_cols = [c for c in combined.columns if c != "Sample ID"]
@@ -217,6 +351,7 @@ def run() -> None:
     print("\n--- Summary ---")
     print(f"  Files combined: {len(loaded)} -> {[name for name, _ in loaded]}")
     print(f"  Unique Sample ID rows in output: {len(combined)}")
+    print(f"  Samples with a matched Gray Value: {matched} / {len(combined)}")
     print(f"  Output columns: {list(combined.columns)}")
     print(f"  Output file: {output_path}")
 
