@@ -20,10 +20,12 @@ Two additional CSV inputs are merged in alongside the folder's files:
     in the combined output (e.g. "VT19_1_2"), a Gray Value ID is derived
     by dropping the sample ID's trailing "_<number>" suffix (e.g.
     "VT19_1"), then looked up in this file to pull in three columns:
-    Gray Value ID, Gray Value, GV Std Dev. If the ID can't be derived
-    (no trailing "_<number>") or has no match, those three columns are
-    left blank for that sample — no new rows are ever added from this
-    file.
+    Gray Value ID, Gray Value, GV Std Dev. If the sample ID has no
+    underscore at all (so no suffix can be dropped), the sample ID
+    itself is looked up directly as a Gray Value ID instead. If neither
+    yields a match (or the ID is ambiguous in the gray value file),
+    those three columns are left blank for that sample — no new rows
+    are ever added from this file.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependency: pandas.
@@ -270,16 +272,22 @@ def build_gray_value_columns(
     """Derive each sample's Gray Value ID and look up its Gray Value / GV Std Dev.
 
     Returns three parallel lists (Gray Value ID, Gray Value, GV Std Dev),
-    one entry per row in sample_ids, in the same order. A sample is left
-    blank in all three lists if its Gray Value ID can't be derived, is
-    ambiguous in the lookup file, or has no match there.
+    one entry per row in sample_ids, in the same order. A sample ID with
+    no underscore at all (so no trailing "_<number>" suffix can be
+    dropped) is instead looked up directly by its own Sample ID, on the
+    chance it IS a Gray Value ID verbatim. A sample is left blank in all
+    three lists if a Gray Value ID candidate can't be determined at all,
+    is ambiguous in the lookup file, or has no match there.
     """
     gray_ids: list = []
     gray_values: list = []
     gray_stddevs: list = []
 
     for sample_id in sample_ids:
-        derived_id = derive_gray_value_id(str(sample_id))
+        sample_id = str(sample_id)
+        derived_id = derive_gray_value_id(sample_id)
+        if derived_id is None and "_" not in sample_id:
+            derived_id = sample_id
         if derived_id is None:
             log.append(
                 f"  '{sample_id}': Gray Value ID could not be derived (no "
@@ -287,14 +295,14 @@ def build_gray_value_columns(
             )
         elif derived_id in duplicate_ids:
             log.append(
-                f"  '{sample_id}': derived Gray Value ID '{derived_id}' is "
+                f"  '{sample_id}': Gray Value ID '{derived_id}' is "
                 f"ambiguous (appears more than once in the gray value file) "
                 f"— leaving Gray Value columns blank"
             )
             derived_id = None
         elif derived_id not in lookup:
             log.append(
-                f"  '{sample_id}': derived Gray Value ID '{derived_id}' not "
+                f"  '{sample_id}': Gray Value ID '{derived_id}' not "
                 f"found in the gray value file — leaving Gray Value columns blank"
             )
             derived_id = None
