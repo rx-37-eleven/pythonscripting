@@ -19,14 +19,18 @@ fit line is straight in every plot as drawn. A single summary CSV of
 the regression results (slope, intercept, R^2, sample count, one row
 per plotted (column, variant, group) triple) is also written.
 
-Every point is additionally color-coded by its H_V_F_COLUMN value (a
-distinct color per unique value, consistent across every plot in the
-run) and marker-coded by its O_C_COLUMN value ("O" -> circle, "C" ->
-triangle). Regressions can optionally be fit separately per H_V_F
-group, per O_C group, or per (H_V_F, O_C) group when both are enabled,
-via the GROUP_REGRESSION_BY_H_V_F / GROUP_REGRESSION_BY_O_C flags
-below. Each column also gets one combined 2x2-grid image with all four
-scale variants side by side.
+Every point is categorized by the columns listed in LEGEND_COLUMNS
+(e.g. ["H_V_F", "O_C"]). Their values are joined with ", " into one
+legend entry per combination present — "Horz, OLC", "Vert, OLC",
+"Vert, CLC" — with COLOR_COLUMN driving the point/line color (hex
+codes from COLOR_PALETTE) and MARKER_COLUMN driving the marker shape.
+Regressions can optionally be fit separately per color-column group,
+per marker-column group, or per combination when both are enabled, via
+the GROUP_REGRESSION_BY_COLOR / GROUP_REGRESSION_BY_MARKER flags below.
+Fit lines and their equations in the legend are each independently
+switchable (SHOW_FIT_LINES / SHOW_FIT_EQUATIONS_IN_LEGEND); the
+regression stats CSV is written either way. Each column also gets one
+combined 2x2-grid image with all four scale variants side by side.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependencies: pandas, numpy, matplotlib.
@@ -69,44 +73,110 @@ X_COLUMN = "Gray Value"
 # numeric-looking date).
 IGNORE_COLUMNS: set[str] = {"Width", "Thickness", "Date Tested"}
 
-# Column identifying each point's category for color-coding. Every
-# unique value found in this column gets its own color, consistent
-# across every plotted column/variant in the run. Rows with a blank/
-# missing value are grouped under the literal category "Unknown".
-H_V_F_COLUMN = "H_V_F"
+# ---------------------------------------------------------------------
+# Legend / categories
+# ---------------------------------------------------------------------
 
-# Column identifying each point's marker shape. Rows with "O" (any
-# case, surrounding whitespace ignored) are plotted as circles, rows
-# with "C" as triangles. Any other value (including blank) falls back
-# to MARKER_FALLBACK below and is grouped under the category "Other".
-O_C_COLUMN = "O_C"
-MARKER_FALLBACK = "x"
+# Columns whose values describe each point, joined IN THIS ORDER with
+# ", " to make that point's legend entry. With ["H_V_F", "O_C"] a row
+# whose H_V_F is "Horz" and O_C is "OLC" is labeled "Horz, OLC". The
+# legend lists one entry per combination actually plotted (e.g.
+# "Horz, OLC", "Vert, OLC", "Vert, CLC") — there is no longer a
+# separate color key and marker key block.
+#
+# Add a third column here and it simply becomes a third comma-separated
+# part of every label; COLOR_COLUMN / MARKER_COLUMN below decide which
+# two of these columns are shown visually. Every column listed here is
+# also excluded from being plotted as a y-axis column.
+LEGEND_COLUMNS: list[str] = ["H_V_F", "O_C"]
 
-# When True, fit a SEPARATE regression line for each unique H_V_F value
-# within a plot instead of one line through all of the column's points.
-# Independent of GROUP_REGRESSION_BY_O_C below — when BOTH are True,
-# regressions are grouped by the (H_V_F, O_C) combination rather than
-# by either alone.
-GROUP_REGRESSION_BY_H_V_F = True
+# Which of LEGEND_COLUMNS drives point/line COLOR. Each of its unique
+# values takes the next color from COLOR_PALETTE below, assigned once
+# per run so a value keeps the same color in every plot.
+COLOR_COLUMN = "H_V_F"
 
-# When True, fit a SEPARATE regression line for each O_C category
-# ("O"/"C"/"Other") within a plot instead of one line through all of
-# the column's points. See GROUP_REGRESSION_BY_H_V_F above for the
+# Which of LEGEND_COLUMNS drives MARKER SHAPE (and fit-line dash
+# style). Set to None to draw every point with DEFAULT_MARKER and every
+# fit line solid.
+MARKER_COLUMN = "O_C"
+
+# Point/line colors as hex codes, handed out in sorted order of
+# COLOR_COLUMN's values. Blue and red are the primaries; black and
+# orange are the alternates used once a third and fourth category
+# appear. Reorder or extend this list to change the assignment — with
+# only Horz and Vert present, Horz takes #0000FF and Vert #FF0000.
+# More categories than colors cycles the list (and is logged).
+COLOR_PALETTE: list[str] = [
+    "#0000FF",  # blue
+    "#FF0000",  # red
+    "#000000",  # black
+    "#FFA500",  # orange
+]
+
+# Marker shape per MARKER_COLUMN value (matplotlib marker codes).
+# Lookup is exact first, then case-insensitive. A value not listed here
+# takes the next unused marker from MARKER_FALLBACK_CYCLE and is logged
+# once per run.
+MARKER_MAP: dict[str, str] = {"OLC": "o", "CLC": "^"}
+MARKER_FALLBACK_CYCLE: tuple[str, ...] = ("s", "D", "v", "P", "X", "*")
+
+# Marker used when MARKER_COLUMN is None.
+DEFAULT_MARKER = "o"
+
+# Fit-line dash styles, handed out in sorted order of MARKER_COLUMN's
+# values (so each marker category's fit line is also distinguishable
+# when two share a color). Cycles if there are more categories than
+# styles.
+LINE_STYLE_CYCLE: tuple[str, ...] = ("-", "--", "-.", ":")
+
+# Text substituted for a blank/missing value in any LEGEND_COLUMNS
+# column, so such rows still get a complete label (e.g. "Horz, Unknown").
+UNKNOWN_LABEL = "Unknown"
+
+# ---------------------------------------------------------------------
+# Regression display / grouping
+# ---------------------------------------------------------------------
+
+# When True, DRAW the fitted regression line(s) on each plot. When
+# False the plots are scatter-only — the regressions are still computed
+# and still written to the regression stats CSV, they're just not drawn.
+SHOW_FIT_LINES = False
+
+# When True, each drawn fit line also gets a legend entry with its
+# equation and R^2 (e.g. "Fit [Horz, OLC]: y = 1.23x + 4.56
+# (R^2=0.789)"). When False those fit entries are left out of the
+# legend entirely, leaving just the category entries. Independent of
+# SHOW_FIT_LINES — but with no lines drawn there is nothing to caption,
+# so nothing is added to the legend either way.
+SHOW_FIT_EQUATIONS_IN_LEGEND = False
+
+# When True, fit a SEPARATE regression line for each unique
+# COLOR_COLUMN value within a plot instead of one line through all of
+# the column's points. Independent of GROUP_REGRESSION_BY_MARKER below
+# — when BOTH are True, regressions are grouped by the full legend
+# combination (e.g. "Vert, CLC") rather than by either column alone.
+GROUP_REGRESSION_BY_COLOR = True
+
+# When True, fit a SEPARATE regression line for each MARKER_COLUMN
+# value within a plot. See GROUP_REGRESSION_BY_COLOR above for the
 # combined-grouping behavior when both flags are True.
-GROUP_REGRESSION_BY_O_C = True
+GROUP_REGRESSION_BY_MARKER = True
+
+# ---------------------------------------------------------------------
+# Styling
+# ---------------------------------------------------------------------
 
 # Scatter point size (color and marker are determined per-point from
-# H_V_F_COLUMN / O_C_COLUMN — see above).
+# COLOR_COLUMN / MARKER_COLUMN — see above).
 POINT_SIZE = 20.0
 
-# Regression line width. Line color/style are determined by the active
-# grouping (see GROUP_REGRESSION_BY_* above): a line for a group tied
-# to an H_V_F value is drawn in that value's color, and a line for a
-# group tied to the "C" O_C category is dashed; REGRESSION_LINE_COLOR
-# is used whenever a line isn't tied to any H_V_F group (grouping off,
-# or grouped by O_C alone).
-REGRESSION_LINE_COLOR = "red"
-REGRESSION_LINE_WIDTH = 0.000001
+# Regression line width, and the fallback line color used only when a
+# fit line isn't tied to any COLOR_COLUMN group (grouping off, or
+# grouped by MARKER_COLUMN alone) — otherwise a group's line is drawn
+# in that group's own palette color. Set SHOW_FIT_LINES = False above
+# to hide the lines rather than shrinking the width to zero.
+REGRESSION_LINE_COLOR = "#000000"
+REGRESSION_LINE_WIDTH = 1.5
 
 # Figure resolution and size (matplotlib default figsize if None).
 DPI = 150
@@ -127,9 +197,6 @@ REGRESSION_KINDS: tuple[tuple[str, bool, bool, str, str], ...] = (
     ("power", True, True, "_loglog", " (log-log)"),
 )
 
-# Marker shape per O_C category (matplotlib marker codes).
-MARKER_MAP: dict[str, str] = {"O": "o", "C": "^"}
-
 # ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
 # brief's "definition of done"):
@@ -142,12 +209,12 @@ MARKER_MAP: dict[str, str] = {"O": "o", "C": "^"}
 #    non-blank numeric value, it's eligible. Non-numeric columns (Sample
 #    ID, Gray Value ID, Notes, etc.) are excluded automatically by this
 #    check; no separate ID-column exclusion list is needed beyond
-#    IGNORE_COLUMNS, H_V_F_COLUMN, and O_C_COLUMN.
+#    IGNORE_COLUMNS and LEGEND_COLUMNS.
 #  - Ignored columns: Width, Thickness, and Date Tested are excluded by
 #    exact, case-sensitive column name regardless of whether they'd
-#    otherwise pass the numeric check (IGNORE_COLUMNS in CONFIG).
-#    H_V_F_COLUMN and O_C_COLUMN are always excluded as y-candidates
-#    too, since they're the categorical color/marker columns.
+#    otherwise pass the numeric check (IGNORE_COLUMNS in CONFIG). Every
+#    column in LEGEND_COLUMNS is always excluded as a y-candidate too,
+#    since those are the categorical legend columns.
 #  - X_COLUMN itself is never also plotted as a y-column.
 #  - Per-row handling: for each candidate y-column, only rows where both
 #    X_COLUMN and that column are non-blank/numeric are used (pairwise,
@@ -165,35 +232,42 @@ MARKER_MAP: dict[str, str] = {"O": "o", "C": "^"}
 #  - R^2 is always computed in the same (possibly log-transformed)
 #    space the regression was actually fit in — i.e. it describes that
 #    linear fit directly, consistent across all four variants.
-#  - Color-coding (H_V_F_COLUMN): every unique value present in the
-#    WHOLE input file (not just one column's valid rows) gets a color
-#    from matplotlib's tab10 palette (tab20 if there are more than 10
-#    unique values, cycling with a repeated color if there are more
-#    than 20), assigned once so the same value always maps to the same
-#    color across every plot in the run. Blank/missing values are
-#    grouped under the category "Unknown".
-#  - Marker-coding (O_C_COLUMN): "O" (case-insensitive, trimmed) ->
-#    circle, "C" -> triangle, anything else (including blank) -> the
-#    MARKER_FALLBACK marker under the category "Other", logged once per
-#    run if any such values are found.
-#  - Regression grouping (GROUP_REGRESSION_BY_H_V_F /
-#    GROUP_REGRESSION_BY_O_C): when both are False (default), one
-#    regression is fit per (column, variant) as before, labeled group
-#    "All". When exactly one is True, one regression is fit per unique
-#    value of that column instead (e.g. one line per H_V_F value).
-#    When BOTH are True, one regression is fit per unique (H_V_F, O_C)
-#    combination present. A group's fit line spans only that group's
+#  - Legend entries (LEGEND_COLUMNS): each point's values from those
+#    columns are joined in the configured order with ", " into a single
+#    label ("Horz, OLC"), and the legend lists one entry per label that
+#    is actually plotted in that figure, drawn with that label's own
+#    color and marker. Blank/missing values become UNKNOWN_LABEL so a
+#    partially-labeled row still reads as a complete combination.
+#  - Color-coding (COLOR_COLUMN): every unique value present in the
+#    WHOLE input file (not just one column's valid rows) takes a hex
+#    code from COLOR_PALETTE in sorted order, assigned once so the same
+#    value always maps to the same color across every plot in the run.
+#    If there are more values than colors the palette cycles (logged).
+#  - Marker-coding (MARKER_COLUMN): MARKER_MAP is consulted first
+#    exactly, then case-insensitively; any value it doesn't cover takes
+#    the next unused marker from MARKER_FALLBACK_CYCLE, logged once per
+#    run. MARKER_COLUMN = None draws every point with DEFAULT_MARKER.
+#  - Regression grouping (GROUP_REGRESSION_BY_COLOR /
+#    GROUP_REGRESSION_BY_MARKER): when both are False, one regression
+#    is fit per (column, variant), labeled group "All". When exactly
+#    one is True, one regression is fit per unique value of that
+#    column instead (e.g. one line per COLOR_COLUMN value). When BOTH
+#    are True, one regression is fit per full legend combination
+#    present ("Vert, CLC"). A group's fit line spans only that group's
 #    own plotted x-range (not the whole variant's), and is skipped
 #    (logged) if it has fewer than 2 valid points. Every fitted group
-#    gets its own row in the regression stats CSV (Group column).
+#    gets its own row in the regression stats CSV (Group column) even
+#    when SHOW_FIT_LINES is False.
+#  - Fit display: SHOW_FIT_LINES controls whether the fitted lines are
+#    drawn at all; SHOW_FIT_EQUATIONS_IN_LEGEND controls whether drawn
+#    lines are captioned in the legend with their equation and R^2.
+#    Neither affects what is computed or written to the stats CSV.
 #  - Displayed rounding (legend text only — the CSV keeps full float
 #    precision): slope/intercept to 4 significant figures (:.4g), R^2
 #    to 3 decimal places (:.3f).
 #  - Plot styling: one figure per (column, variant) pair, points plus
 #    fit line(s) (see grouping above), gridlines on (major+minor when
-#    either axis is log scaled). Legend lists the fit line(s) followed
-#    by a color-key entry per H_V_F value and a marker-key entry per
-#    O_C category present in that plot, placed outside the axes (to
+#    either axis is log scaled). Legend placed outside the axes (to
 #    the right) since it can get long; figures are saved with
 #    bbox_inches="tight" so the external legend isn't clipped. No fixed
 #    axis limits across plots (unlike C5_plot_stress_strain.py) since
@@ -222,10 +296,10 @@ def format_equation_label(
 ) -> str:
     """Build a plot legend's fit-equation label, in the space the regression was fit in.
 
-    group_label is the group this fit line belongs to (e.g. "H_V_F=X"),
+    group_label is the group this fit line belongs to (e.g. "Horz, OLC"),
     or None for the single ungrouped fit. Slope/intercept are rounded
     to 4 significant figures and R^2 to 3 decimal places for display
-    only — regression_stats keeps full precision (see build_regression_row).
+    only — regression_stats keeps full precision.
     """
     slope_str = f"{slope:.4g}"
     intercept_str = f"{intercept:.4g}"
@@ -246,33 +320,73 @@ def format_equation_label(
     return f"{prefix}: {equation} (R^2={r2_str})"
 
 
-def build_color_map(values: pd.Series) -> dict[str, tuple]:
-    """Assign each unique category in values a distinct, stable color."""
-    uniques = sorted(values.unique())
-    cmap = plt.get_cmap("tab10") if len(uniques) <= 10 else plt.get_cmap("tab20")
-    return {value: cmap(i % cmap.N) for i, value in enumerate(uniques)}
+def clean_category(value: object) -> str:
+    """Normalize one categorical cell: trimmed text, or UNKNOWN_LABEL if blank."""
+    if pd.isna(value):
+        return UNKNOWN_LABEL
+    text = str(value).strip()
+    return text if text else UNKNOWN_LABEL
 
 
-def resolve_oc_categories(
-    oc_raw: pd.Series, log: list[str]
-) -> tuple[pd.Series, pd.Series]:
-    """Map O_C_COLUMN's raw values to (category, marker) Series aligned to oc_raw's index.
+def build_legend_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a frame of cleaned LEGEND_COLUMNS values plus their joined "Label" column.
 
-    Category is "O", "C", or "Other" (blank/anything else); marker is
-    the matplotlib marker code for that category. Logs one note (not
-    one per row) if any "Other" values are found.
+    The label is every LEGEND_COLUMNS value for that row joined in the
+    configured order with ", " — e.g. "Horz, OLC".
     """
-    cleaned = oc_raw.apply(lambda v: "" if pd.isna(v) else str(v).strip().upper())
-    category = cleaned.apply(lambda v: v if v in MARKER_MAP else "Other")
-    marker = category.apply(lambda v: MARKER_MAP.get(v, MARKER_FALLBACK))
+    cleaned = pd.DataFrame({column: df[column].apply(clean_category) for column in LEGEND_COLUMNS})
+    cleaned["Label"] = cleaned[LEGEND_COLUMNS].agg(", ".join, axis=1)
+    return cleaned
 
-    other_values = sorted({v if v else "(blank)" for v in cleaned[category == "Other"].unique()})
-    if other_values:
+
+def build_color_map(values: pd.Series, log: list[str]) -> dict[str, str]:
+    """Assign each unique COLOR_COLUMN value a hex color from COLOR_PALETTE, in sorted order."""
+    uniques = sorted(values.unique())
+    if len(uniques) > len(COLOR_PALETTE):
         log.append(
-            f"NOTE: {O_C_COLUMN} has value(s) other than 'O'/'C': {other_values} — "
-            f"plotted with fallback marker '{MARKER_FALLBACK}' under category 'Other'"
+            f"NOTE: {COLOR_COLUMN} has {len(uniques)} unique value(s) but COLOR_PALETTE has "
+            f"only {len(COLOR_PALETTE)} color(s) — colors are reused (cycled). Add more hex "
+            f"codes to COLOR_PALETTE to give every value its own color."
         )
-    return category, marker
+    return {value: COLOR_PALETTE[i % len(COLOR_PALETTE)] for i, value in enumerate(uniques)}
+
+
+def build_marker_map(values: pd.Series, log: list[str]) -> dict[str, str]:
+    """Assign each unique MARKER_COLUMN value a matplotlib marker code.
+
+    MARKER_MAP is consulted first exactly, then case-insensitively; any
+    value it doesn't cover takes the next unused marker from
+    MARKER_FALLBACK_CYCLE (cycling if it runs out) and is logged once.
+    """
+    lowercase_map = {key.strip().lower(): marker for key, marker in MARKER_MAP.items()}
+    uniques = sorted(values.unique())
+
+    resolved: dict[str, str] = {}
+    unmapped: list[str] = []
+    for value in uniques:
+        if value in MARKER_MAP:
+            resolved[value] = MARKER_MAP[value]
+        elif value.strip().lower() in lowercase_map:
+            resolved[value] = lowercase_map[value.strip().lower()]
+        else:
+            unmapped.append(value)
+
+    for i, value in enumerate(unmapped):
+        resolved[value] = MARKER_FALLBACK_CYCLE[i % len(MARKER_FALLBACK_CYCLE)]
+
+    if unmapped:
+        assignments = ", ".join(f"{value!r} -> '{resolved[value]}'" for value in unmapped)
+        log.append(
+            f"NOTE: {MARKER_COLUMN} has value(s) not listed in MARKER_MAP: {assignments} "
+            f"(fallback markers). Add them to MARKER_MAP to choose their shapes."
+        )
+    return resolved
+
+
+def build_line_style_map(values: pd.Series) -> dict[str, str]:
+    """Assign each unique MARKER_COLUMN value a fit-line dash style, in sorted order."""
+    uniques = sorted(values.unique())
+    return {value: LINE_STYLE_CYCLE[i % len(LINE_STYLE_CYCLE)] for i, value in enumerate(uniques)}
 
 
 def build_grid_image(
@@ -332,10 +446,10 @@ def fit_and_plot_variant(
     column: str,
     x_all: pd.Series,
     y_all: pd.Series,
-    hvf_all: pd.Series,
-    oc_category_all: pd.Series,
-    marker_all: pd.Series,
-    color_map: dict[str, tuple],
+    categories_all: pd.DataFrame,
+    color_map: dict[str, str],
+    marker_map: dict[str, str],
+    line_style_map: dict[str, str],
     grouping_mode: str,
     kind: str,
     log_x: bool,
@@ -347,10 +461,11 @@ def fit_and_plot_variant(
 ) -> tuple[list[dict], Path | None]:
     """Fit and plot one (column, scale-variant) pair.
 
-    grouping_mode is one of "all", "hvf", "oc", "both" (see
-    GROUP_REGRESSION_BY_H_V_F / GROUP_REGRESSION_BY_O_C). Returns
-    (regression_stats rows, output PNG path or None if nothing was
-    plotted for lack of valid points).
+    categories_all holds one cleaned column per LEGEND_COLUMNS entry
+    plus the joined "Label" column. grouping_mode is one of "all",
+    "color", "marker", "both" (see GROUP_REGRESSION_BY_COLOR /
+    GROUP_REGRESSION_BY_MARKER). Returns (regression_stats rows, output
+    PNG path or None if nothing was plotted for lack of valid points).
     """
     valid = x_all.notna() & y_all.notna()
     if log_x:
@@ -369,56 +484,68 @@ def fit_and_plot_variant(
 
     x = x_all[valid]
     y = y_all[valid]
-    hvf = hvf_all[valid]
-    oc_category = oc_category_all[valid]
-    marker = marker_all[valid]
+    categories = categories_all[valid]
 
     fig, ax = plt.subplots(figsize=FIGSIZE, dpi=DPI)
 
     x_np = x.to_numpy(dtype=float)
     y_np = y.to_numpy(dtype=float)
-    hvf_np = hvf.to_numpy()
-    oc_np = oc_category.to_numpy()
-    marker_np = marker.to_numpy()
+    label_np = categories["Label"].to_numpy()
+    color_np = categories[COLOR_COLUMN].to_numpy()
+    marker_np = (
+        categories[MARKER_COLUMN].to_numpy()
+        if MARKER_COLUMN is not None
+        else np.full(len(label_np), "", dtype=object)
+    )
 
-    for hvf_val, marker_char in sorted(set(zip(hvf_np, marker_np))):
-        point_mask = (hvf_np == hvf_val) & (marker_np == marker_char)
-        ax.scatter(
-            x_np[point_mask], y_np[point_mask], s=POINT_SIZE, color=color_map[hvf_val], marker=marker_char
-        )
+    # Each label is a full LEGEND_COLUMNS combination, so its color and
+    # marker keys are constant within it — take them from its first row.
+    label_keys: dict[str, tuple[str, str]] = {}
+    for label, color_key, marker_key in zip(label_np, color_np, marker_np):
+        label_keys.setdefault(label, (color_key, marker_key))
+
+    legend_handles: list[object] = []
+    legend_labels: list[str] = []
+
+    for label in sorted(label_keys):
+        color_key, marker_key = label_keys[label]
+        color = color_map[color_key]
+        marker = marker_map[marker_key] if MARKER_COLUMN is not None else DEFAULT_MARKER
+        point_mask = label_np == label
+        ax.scatter(x_np[point_mask], y_np[point_mask], s=POINT_SIZE, color=color, marker=marker)
+        legend_handles.append(Line2D([0], [0], marker=marker, linestyle="none", color=color))
+        legend_labels.append(label)
 
     if grouping_mode == "both":
-        group_keys = sorted(set(zip(hvf_np, oc_np)))
-    elif grouping_mode == "hvf":
-        group_keys = sorted(set(hvf_np))
-    elif grouping_mode == "oc":
-        group_keys = sorted(set(oc_np))
+        group_keys = sorted(label_keys)
+    elif grouping_mode == "color":
+        group_keys = sorted(set(color_np))
+    elif grouping_mode == "marker":
+        group_keys = sorted(set(marker_np))
     else:
         group_keys = ["All"]
 
     regression_rows: list[dict] = []
-    legend_handles: list[object] = []
-    legend_labels: list[str] = []
+    fit_handles: list[object] = []
+    fit_labels: list[str] = []
 
     for group_key in group_keys:
         if grouping_mode == "both":
-            hvf_val, oc_val = group_key
-            group_mask = (hvf_np == hvf_val) & (oc_np == oc_val)
-            group_desc = f"H_V_F={hvf_val}, O_C={oc_val}"
-            line_color = color_map[hvf_val]
-            line_style = "--" if oc_val == "C" else "-"
-        elif grouping_mode == "hvf":
-            hvf_val = group_key
-            group_mask = hvf_np == hvf_val
-            group_desc = f"H_V_F={hvf_val}"
-            line_color = color_map[hvf_val]
+            group_mask = label_np == group_key
+            group_desc = group_key
+            color_key, marker_key = label_keys[group_key]
+            line_color = color_map[color_key]
+            line_style = line_style_map[marker_key] if MARKER_COLUMN is not None else "-"
+        elif grouping_mode == "color":
+            group_mask = color_np == group_key
+            group_desc = group_key
+            line_color = color_map[group_key]
             line_style = "-"
-        elif grouping_mode == "oc":
-            oc_val = group_key
-            group_mask = oc_np == oc_val
-            group_desc = f"O_C={oc_val}"
+        elif grouping_mode == "marker":
+            group_mask = marker_np == group_key
+            group_desc = group_key
             line_color = REGRESSION_LINE_COLOR
-            line_style = "--" if oc_val == "C" else "-"
+            line_style = line_style_map[group_key]
         else:
             group_mask = np.ones(len(x_np), dtype=bool)
             group_desc = "All"
@@ -443,16 +570,26 @@ def fit_and_plot_variant(
         total_ss = float(np.sum((y_fit - np.mean(y_fit)) ** 2))
         r_squared = 1.0 - residual_ss / total_ss if total_ss != 0 else float("nan")
 
-        x_line = np.geomspace(xs.min(), xs.max(), 200) if log_x else np.linspace(xs.min(), xs.max(), 200)
-        x_line_fit = np.log(x_line) if log_x else x_line
-        y_line_fit = slope * x_line_fit + intercept
-        y_line = np.exp(y_line_fit) if log_y else y_line_fit
+        # The fit is still computed (and recorded below) when
+        # SHOW_FIT_LINES is off — only the drawing is skipped.
+        if SHOW_FIT_LINES:
+            x_line = (
+                np.geomspace(xs.min(), xs.max(), 200) if log_x else np.linspace(xs.min(), xs.max(), 200)
+            )
+            x_line_fit = np.log(x_line) if log_x else x_line
+            y_line_fit = slope * x_line_fit + intercept
+            y_line = np.exp(y_line_fit) if log_y else y_line_fit
 
-        (line_handle,) = ax.plot(x_line, y_line, color=line_color, linewidth=REGRESSION_LINE_WIDTH, linestyle=line_style)
-        legend_handles.append(line_handle)
-        legend_labels.append(
-            format_equation_label(kind, slope, intercept, r_squared, None if group_desc == "All" else group_desc)
-        )
+            (line_handle,) = ax.plot(
+                x_line, y_line, color=line_color, linewidth=REGRESSION_LINE_WIDTH, linestyle=line_style
+            )
+            if SHOW_FIT_EQUATIONS_IN_LEGEND:
+                fit_handles.append(line_handle)
+                fit_labels.append(
+                    format_equation_label(
+                        kind, slope, intercept, r_squared, None if group_desc == "All" else group_desc
+                    )
+                )
 
         regression_rows.append(
             {
@@ -466,14 +603,9 @@ def fit_and_plot_variant(
             }
         )
 
-    for hvf_val in sorted(set(hvf_np)):
-        legend_handles.append(Line2D([0], [0], marker="o", linestyle="none", color=color_map[hvf_val]))
-        legend_labels.append(f"{H_V_F_COLUMN}: {hvf_val}")
-    for oc_val in sorted(set(oc_np)):
-        legend_handles.append(
-            Line2D([0], [0], marker=MARKER_MAP.get(oc_val, MARKER_FALLBACK), linestyle="none", color="black")
-        )
-        legend_labels.append(f"{O_C_COLUMN}: {oc_val}")
+    # Fit entries (when shown) lead the legend, category entries follow.
+    legend_handles = fit_handles + legend_handles
+    legend_labels = fit_labels + legend_labels
 
     if log_x:
         ax.set_xscale("log")
@@ -497,36 +629,59 @@ def fit_and_plot_variant(
     return regression_rows, output_path
 
 
+def validate_config(df: pd.DataFrame) -> None:
+    """Check the CONFIG block against the input file before any plotting."""
+    if X_COLUMN not in df.columns:
+        raise ValueError(f"X_COLUMN '{X_COLUMN}' not found in '{INPUT_PATH}'")
+    if not LEGEND_COLUMNS:
+        raise ValueError("LEGEND_COLUMNS must list at least one column")
+
+    for column in LEGEND_COLUMNS:
+        if column not in df.columns:
+            raise ValueError(f"LEGEND_COLUMNS entry '{column}' not found in '{INPUT_PATH}'")
+    if COLOR_COLUMN not in LEGEND_COLUMNS:
+        raise ValueError(f"COLOR_COLUMN '{COLOR_COLUMN}' must be one of LEGEND_COLUMNS {LEGEND_COLUMNS}")
+    if MARKER_COLUMN is not None and MARKER_COLUMN not in LEGEND_COLUMNS:
+        raise ValueError(f"MARKER_COLUMN '{MARKER_COLUMN}' must be one of LEGEND_COLUMNS {LEGEND_COLUMNS}")
+    if not COLOR_PALETTE:
+        raise ValueError("COLOR_PALETTE must contain at least one hex color code")
+
+
+def resolve_grouping_mode() -> str:
+    """Translate the GROUP_REGRESSION_BY_* flags into a single grouping mode."""
+    group_by_marker = GROUP_REGRESSION_BY_MARKER and MARKER_COLUMN is not None
+    if GROUP_REGRESSION_BY_COLOR and group_by_marker:
+        return "both"
+    if GROUP_REGRESSION_BY_COLOR:
+        return "color"
+    if group_by_marker:
+        return "marker"
+    return "all"
+
+
 def run() -> None:
     print(f"Reading input file '{INPUT_PATH}'...")
     df = pd.read_csv(INPUT_PATH)
     print(f"  {df.shape[0]} row(s) x {df.shape[1]} column(s)")
 
-    if X_COLUMN not in df.columns:
-        raise ValueError(f"X_COLUMN '{X_COLUMN}' not found in '{INPUT_PATH}'")
-    if H_V_F_COLUMN not in df.columns:
-        raise ValueError(f"H_V_F_COLUMN '{H_V_F_COLUMN}' not found in '{INPUT_PATH}'")
-    if O_C_COLUMN not in df.columns:
-        raise ValueError(f"O_C_COLUMN '{O_C_COLUMN}' not found in '{INPUT_PATH}'")
+    validate_config(df)
 
     x_all = pd.to_numeric(df[X_COLUMN], errors="coerce")
 
     log: list[str] = []
 
-    hvf_all = df[H_V_F_COLUMN].apply(lambda v: "Unknown" if pd.isna(v) or str(v).strip() == "" else str(v).strip())
-    color_map = build_color_map(hvf_all)
-    oc_category_all, marker_all = resolve_oc_categories(df[O_C_COLUMN], log)
-
-    if GROUP_REGRESSION_BY_H_V_F and GROUP_REGRESSION_BY_O_C:
-        grouping_mode = "both"
-    elif GROUP_REGRESSION_BY_H_V_F:
-        grouping_mode = "hvf"
-    elif GROUP_REGRESSION_BY_O_C:
-        grouping_mode = "oc"
+    categories_all = build_legend_labels(df)
+    color_map = build_color_map(categories_all[COLOR_COLUMN], log)
+    if MARKER_COLUMN is not None:
+        marker_map = build_marker_map(categories_all[MARKER_COLUMN], log)
+        line_style_map = build_line_style_map(categories_all[MARKER_COLUMN])
     else:
-        grouping_mode = "all"
+        marker_map = {}
+        line_style_map = {}
 
-    excluded_columns = IGNORE_COLUMNS | {H_V_F_COLUMN, O_C_COLUMN}
+    grouping_mode = resolve_grouping_mode()
+
+    excluded_columns = IGNORE_COLUMNS | set(LEGEND_COLUMNS)
     candidate_columns = [c for c in df.columns if c != X_COLUMN and c not in excluded_columns]
 
     regression_rows: list[dict] = []
@@ -546,10 +701,10 @@ def run() -> None:
                 column,
                 x_all,
                 y_all,
-                hvf_all,
-                oc_category_all,
-                marker_all,
+                categories_all,
                 color_map,
+                marker_map,
+                line_style_map,
                 grouping_mode,
                 kind,
                 log_x,
@@ -565,6 +720,14 @@ def run() -> None:
 
         if build_grid_image(column, kind_paths, timestamp, log) is not None:
             grid_images_written += 1
+
+    print("\n--- Legend categories ---")
+    print(f"  Legend label = {', '.join(LEGEND_COLUMNS)} (joined with ', ')")
+    for value, color in sorted(color_map.items()):
+        print(f"  {COLOR_COLUMN} '{value}' -> color {color}")
+    for value, marker in sorted(marker_map.items()):
+        print(f"  {MARKER_COLUMN} '{value}' -> marker '{marker}'")
+    print(f"  Fit lines drawn: {SHOW_FIT_LINES}; fit equations in legend: {SHOW_FIT_EQUATIONS_IN_LEGEND}")
 
     print("\n--- Skipped / logged items ---")
     if log:
