@@ -33,6 +33,11 @@ switchable (SHOW_FIT_LINES / SHOW_FIT_EQUATIONS_IN_LEGEND); the
 regression stats CSV is written either way. Each column also gets one
 combined 2x2-grid image with all four scale variants side by side.
 
+All four variants are always fitted and always reach the stats CSV and
+the grid image. SAVE_ALL_PLOT_VARIANTS controls only how many of them
+are kept as standalone PNGs: True keeps all four per column, False
+keeps just the base linear plot.
+
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependencies: pandas, numpy, matplotlib.
 
@@ -43,6 +48,7 @@ output file as input.
 
 from __future__ import annotations
 
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -203,14 +209,34 @@ FIGSIZE = None
 GRID_TITLE_IN = 0.5
 
 # The four (name, log_x, log_y, filename_suffix, title_suffix) variants
-# plotted for every column — not user-configurable, since all four are
-# always produced together per the brief.
+# fitted for every column. All four are ALWAYS fitted and always appear
+# in the regression stats CSV; SAVE_ALL_PLOT_VARIANTS below controls
+# only how many of them are kept as standalone PNGs.
 REGRESSION_KINDS: tuple[tuple[str, bool, bool, str, str], ...] = (
     ("linear", False, False, "", ""),
     ("logarithmic", True, False, "_logx", " (log-x)"),
     ("exponential", False, True, "_logy", " (log-y)"),
     ("power", True, True, "_loglog", " (log-log)"),
 )
+
+# Which REGRESSION_KINDS entry is the "base" plot — the one kept when
+# SAVE_ALL_PLOT_VARIANTS is False. "linear" is the untransformed
+# plot (linear x, linear y).
+BASE_REGRESSION_KIND = "linear"
+
+# How many of the four scale variants are kept as their own PNG file:
+#
+#   True  -> all four are saved (linear, log-x, log-y, log-log), i.e.
+#            four standalone PNGs per column plus the grid image.
+#   False -> only the base plot (BASE_REGRESSION_KIND) is saved, i.e.
+#            one standalone PNG per column plus the grid image.
+#
+# This is purely about which FILES are kept. Either way all four
+# variants are fitted, all four contribute their rows to the regression
+# stats CSV, and all four are still rendered into the combined 2x2 grid
+# image — when False the three non-base plots are drawn to a temporary
+# directory, composited into the grid, and discarded.
+SAVE_ALL_PLOT_VARIANTS = False
 
 # ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
@@ -293,6 +319,15 @@ REGRESSION_KINDS: tuple[tuple[str, bool, bool, str, str], ...] = (
 #    bbox_inches="tight" so the external legend isn't clipped. No fixed
 #    axis limits across plots (unlike C5_plot_stress_strain.py) since
 #    each column has its own unit/scale.
+#  - Plot files kept (SAVE_ALL_PLOT_VARIANTS): True writes a PNG for
+#    every (column, variant) pair; False writes only the
+#    BASE_REGRESSION_KIND ("linear") plot per column. The setting is
+#    about retained FILES only — every variant is fitted, contributes
+#    its rows to the regression stats CSV, and is rendered into the
+#    combined grid image either way. When False the three non-base
+#    plots are rendered into a per-column temporary directory that is
+#    deleted once the grid has been composited from them, so they never
+#    appear in OUTPUT_DIR.
 #  - Output: one PNG per plotted (column, variant) pair
 #    (<column>_vs_<X_COLUMN><variant_suffix>_plot_<timestamp>.png,
 #    variant_suffix one of "", "_logx", "_logy", "_loglog"; a literal
@@ -522,9 +557,15 @@ def fit_and_plot_variant(
     filename_suffix: str,
     title_suffix: str,
     timestamp: str,
+    destination_dir: Path,
     log: list[str],
 ) -> tuple[list[dict], Path | None]:
     """Fit and plot one (column, scale-variant) pair.
+
+    destination_dir is where this variant's PNG is written — OUTPUT_DIR
+    for a variant being kept, or a scratch directory for one that is
+    only needed long enough to be composited into the grid image (see
+    SAVE_ALL_PLOT_VARIANTS).
 
     categories_all holds one cleaned column per LEGEND_COLUMNS entry
     plus the joined "Label" column. grouping_mode is one of "all",
@@ -685,7 +726,7 @@ def fit_and_plot_variant(
         ax.legend(legend_handles, legend_labels, fontsize="small", loc="upper left", bbox_to_anchor=(1.02, 1.0))
 
     safe_column = column.replace("/", "-")
-    output_path = OUTPUT_DIR / f"{safe_column}_vs_{X_COLUMN}{filename_suffix}_plot_{timestamp}.png"
+    output_path = destination_dir / f"{safe_column}_vs_{X_COLUMN}{filename_suffix}_plot_{timestamp}.png"
     if output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing output file: {output_path}")
     fig.savefig(output_path, bbox_inches="tight")
@@ -716,6 +757,13 @@ def validate_config(df: pd.DataFrame) -> None:
     for color in COLOR_PALETTE:
         if not mcolors.is_color_like(color):
             raise ValueError(f"COLOR_PALETTE entry is not a valid color: {color!r}")
+
+    known_kinds = [kind for kind, *_ in REGRESSION_KINDS]
+    if BASE_REGRESSION_KIND not in known_kinds:
+        raise ValueError(
+            f"BASE_REGRESSION_KIND '{BASE_REGRESSION_KIND}' is not one of the "
+            f"REGRESSION_KINDS variants {known_kinds}"
+        )
 
 
 def resolve_grouping_mode() -> str:
@@ -757,6 +805,7 @@ def run() -> None:
 
     regression_rows: list[dict] = []
     grid_images_written = 0
+    plots_written = 0
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -766,31 +815,42 @@ def run() -> None:
         if y_all.notna().sum() == 0:
             continue  # not a numeric column (e.g. Sample ID, Notes) — skip silently
 
+        # Variants that aren't being kept are still drawn — the grid
+        # image is composited from the rendered PNGs — but into a scratch
+        # directory that is deleted when this column is done.
         kind_paths: dict[str, Path] = {}
-        for kind, log_x, log_y, filename_suffix, title_suffix in REGRESSION_KINDS:
-            rows, output_path = fit_and_plot_variant(
-                column,
-                x_all,
-                y_all,
-                categories_all,
-                color_map,
-                marker_map,
-                line_style_map,
-                grouping_mode,
-                kind,
-                log_x,
-                log_y,
-                filename_suffix,
-                title_suffix,
-                timestamp,
-                log,
-            )
-            regression_rows.extend(rows)
-            if output_path is not None:
-                kind_paths[kind] = output_path
+        with tempfile.TemporaryDirectory(prefix="c6_variants_") as scratch:
+            scratch_dir = Path(scratch)
+            for kind, log_x, log_y, filename_suffix, title_suffix in REGRESSION_KINDS:
+                keep = SAVE_ALL_PLOT_VARIANTS or kind == BASE_REGRESSION_KIND
+                rows, output_path = fit_and_plot_variant(
+                    column,
+                    x_all,
+                    y_all,
+                    categories_all,
+                    color_map,
+                    marker_map,
+                    line_style_map,
+                    grouping_mode,
+                    kind,
+                    log_x,
+                    log_y,
+                    filename_suffix,
+                    title_suffix,
+                    timestamp,
+                    OUTPUT_DIR if keep else scratch_dir,
+                    log,
+                )
+                regression_rows.extend(rows)
+                if output_path is not None:
+                    kind_paths[kind] = output_path
+                    if keep:
+                        plots_written += 1
 
-        if build_grid_image(column, kind_paths, timestamp, log) is not None:
-            grid_images_written += 1
+            # Built inside the scratch context, while the discarded
+            # variants' PNGs still exist to be read back.
+            if build_grid_image(column, kind_paths, timestamp, log) is not None:
+                grid_images_written += 1
 
     print("\n--- Legend categories ---")
     print(f"  Legend label = {', '.join(LEGEND_COLUMNS)} (joined with ', ')")
@@ -799,6 +859,14 @@ def run() -> None:
     for value, marker in sorted(marker_map.items()):
         print(f"  {MARKER_COLUMN} '{value}' -> marker '{marker}'")
     print(f"  Fit lines drawn: {SHOW_FIT_LINES}; fit equations in legend: {SHOW_FIT_EQUATIONS_IN_LEGEND}")
+    if SAVE_ALL_PLOT_VARIANTS:
+        print("  Saving a PNG for every scale variant (SAVE_ALL_PLOT_VARIANTS = True)")
+    else:
+        print(
+            f"  Saving only the '{BASE_REGRESSION_KIND}' plot per column "
+            f"(SAVE_ALL_PLOT_VARIANTS = False) — the other variants are still fitted, "
+            f"still in the stats CSV, and still in the grid image"
+        )
 
     print("\n--- Skipped / logged items ---")
     if log:
@@ -820,7 +888,8 @@ def run() -> None:
     regression_df.to_csv(stats_path, index=False)
 
     print("\n--- Summary ---")
-    print(f"  Plots generated: {len(regression_rows)}")
+    print(f"  Regression fits computed: {len(regression_rows)}")
+    print(f"  Standalone plot PNGs saved: {plots_written}")
     print(f"  Grid images generated: {grid_images_written}")
     print(f"  Columns covered: {sorted({r['Column'] for r in regression_rows})}")
     print(f"  Regression stats file: {stats_path}")
