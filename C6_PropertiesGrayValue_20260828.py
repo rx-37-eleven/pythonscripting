@@ -23,7 +23,8 @@ Every point is categorized by the columns listed in LEGEND_COLUMNS
 (e.g. ["H_V_F", "O_C"]). Their values are joined with ", " into one
 legend entry per combination present — "Horz, OLC", "Vert, OLC",
 "Vert, CLC" — with COLOR_COLUMN driving the point/line color (hex
-codes from COLOR_PALETTE) and MARKER_COLUMN driving the marker shape.
+codes pinned in COLOR_MAP, else handed out from COLOR_PALETTE) and
+MARKER_COLUMN driving the marker shape.
 Regressions can optionally be fit separately per color-column group,
 per marker-column group, or per combination when both are enabled, via
 the GROUP_REGRESSION_BY_COLOR / GROUP_REGRESSION_BY_MARKER flags below.
@@ -51,6 +52,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib import colors as mcolors
 from matplotlib.lines import Line2D
 
 # =====================================================================
@@ -90,9 +92,9 @@ IGNORE_COLUMNS: set[str] = {"Width", "Thickness", "Date Tested"}
 # also excluded from being plotted as a y-axis column.
 LEGEND_COLUMNS: list[str] = ["H_V_F", "O_C"]
 
-# Which of LEGEND_COLUMNS drives point/line COLOR. Each of its unique
-# values takes the next color from COLOR_PALETTE below, assigned once
-# per run so a value keeps the same color in every plot.
+# Which of LEGEND_COLUMNS drives point/line COLOR. Its values are
+# colored by COLOR_MAP / COLOR_PALETTE below, assigned once per run so
+# a value keeps the same color in every plot.
 COLOR_COLUMN = "H_V_F"
 
 # Which of LEGEND_COLUMNS drives MARKER SHAPE (and fit-line dash
@@ -100,12 +102,22 @@ COLOR_COLUMN = "H_V_F"
 # fit line solid.
 MARKER_COLUMN = "O_C"
 
-# Point/line colors as hex codes, handed out in sorted order of
-# COLOR_COLUMN's values. Blue and red are the primaries; black and
-# orange are the alternates used once a third and fourth category
-# appear. Reorder or extend this list to change the assignment — with
-# only Horz and Vert present, Horz takes #0000FF and Vert #FF0000.
-# More categories than colors cycles the list (and is logged).
+# Hex color pinned to a specific COLOR_COLUMN value. Anything pinned
+# here keeps that exact color no matter what other values exist in the
+# file — this is what stops a category that happens to sort earlier
+# alphabetically (e.g. "F") from pushing Horz and Vert down the
+# palette. Set to {} to hand every value out of COLOR_PALETTE
+# instead.
+COLOR_MAP: dict[str, str] = {
+    "Horz": "#0000FF",  # blue
+    "Vert": "#FF0000",  # red
+}
+
+# Colors for COLOR_COLUMN values NOT pinned in COLOR_MAP, handed out in
+# sorted order from the first entry not already used by a pin. With the
+# pins above, a third category such as "F" takes black and a fourth
+# takes orange. More unpinned values than remaining colors cycles the
+# list (and is logged).
 COLOR_PALETTE: list[str] = [
     "#0000FF",  # blue
     "#FF0000",  # red
@@ -182,10 +194,13 @@ REGRESSION_LINE_WIDTH = 1.5
 DPI = 150
 FIGSIZE = None
 
-# Figure size for each column's combined 2x2 grid image (None ->
-# matplotlib default; that default is usually too small for four
-# combined plots, hence the larger explicit default here).
-GRID_FIGSIZE = (24, 12)
+# The combined 2x2 grid image has no configurable figure size: it is
+# derived from the pixel dimensions of the four variant PNGs actually
+# going into it, so each panel is reproduced at its true aspect ratio
+# instead of being stretched to fit a guessed figure shape. GRID_TITLE_IN
+# is the vertical space (inches) reserved above the panels for the
+# grid's suptitle.
+GRID_TITLE_IN = 0.5
 
 # The four (name, log_x, log_y, filename_suffix, title_suffix) variants
 # plotted for every column — not user-configurable, since all four are
@@ -238,11 +253,17 @@ REGRESSION_KINDS: tuple[tuple[str, bool, bool, str, str], ...] = (
 #    is actually plotted in that figure, drawn with that label's own
 #    color and marker. Blank/missing values become UNKNOWN_LABEL so a
 #    partially-labeled row still reads as a complete combination.
-#  - Color-coding (COLOR_COLUMN): every unique value present in the
-#    WHOLE input file (not just one column's valid rows) takes a hex
-#    code from COLOR_PALETTE in sorted order, assigned once so the same
-#    value always maps to the same color across every plot in the run.
-#    If there are more values than colors the palette cycles (logged).
+#  - Color-coding (COLOR_COLUMN): colors are resolved over every unique
+#    value present in the WHOLE input file (not just one column's valid
+#    rows), assigned once so the same value always maps to the same
+#    color across every plot in the run. COLOR_MAP pins win first
+#    (exact match, then case-insensitive); the remaining values take
+#    COLOR_PALETTE colors that no pin claimed, in sorted order. Pinning
+#    Horz and Vert is deliberate: without it a category that merely
+#    sorts earlier (e.g. "F") consumes the first color and shifts every
+#    other category down the palette, even on charts where that
+#    category has no points. If the unpinned values outnumber the
+#    unused colors the palette cycles (logged).
 #  - Marker-coding (MARKER_COLUMN): MARKER_MAP is consulted first
 #    exactly, then case-insensitively; any value it doesn't cover takes
 #    the next unused marker from MARKER_FALLBACK_CYCLE, logged once per
@@ -282,7 +303,9 @@ REGRESSION_KINDS: tuple[tuple[str, bool, bool, str, str], ...] = (
 #    — original upper-left, log-log upper-right, log-y lower-left,
 #    log-x lower-right; a variant missing for that column, e.g. skipped
 #    for lack of positive values, renders as an empty "Not available"
-#    quadrant rather than omitting the grid image), plus one
+#    quadrant rather than omitting the grid image; the grid figure is
+#    sized from the pixel dimensions of those PNGs and each panel drawn
+#    at aspect="equal", so panels are never stretched to fit), plus one
 #    regression_stats_<timestamp>.csv (columns: Column, Regression
 #    Type, Group, Slope, Intercept, R^2, N) covering every successfully
 #    fitted (column, variant, group) triple. Figures are saved only —
@@ -340,15 +363,42 @@ def build_legend_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_color_map(values: pd.Series, log: list[str]) -> dict[str, str]:
-    """Assign each unique COLOR_COLUMN value a hex color from COLOR_PALETTE, in sorted order."""
+    """Assign each unique COLOR_COLUMN value a hex color.
+
+    COLOR_MAP pins take precedence (exactly first, then
+    case-insensitively); every remaining value takes the next color
+    from COLOR_PALETTE that no pin already claimed, in sorted order.
+    Pinning is what keeps Horz blue and Vert red regardless of which
+    other categories exist in the file.
+    """
+    lowercase_pins = {key.strip().lower(): color for key, color in COLOR_MAP.items()}
     uniques = sorted(values.unique())
-    if len(uniques) > len(COLOR_PALETTE):
+
+    resolved: dict[str, str] = {}
+    unpinned: list[str] = []
+    for value in uniques:
+        if value in COLOR_MAP:
+            resolved[value] = COLOR_MAP[value]
+        elif value.strip().lower() in lowercase_pins:
+            resolved[value] = lowercase_pins[value.strip().lower()]
+        else:
+            unpinned.append(value)
+
+    available = [color for color in COLOR_PALETTE if color not in resolved.values()]
+    if not available:  # every palette color is pinned — fall back to the full list
+        available = list(COLOR_PALETTE)
+
+    for i, value in enumerate(unpinned):
+        resolved[value] = available[i % len(available)]
+
+    if len(unpinned) > len(available):
         log.append(
-            f"NOTE: {COLOR_COLUMN} has {len(uniques)} unique value(s) but COLOR_PALETTE has "
-            f"only {len(COLOR_PALETTE)} color(s) — colors are reused (cycled). Add more hex "
-            f"codes to COLOR_PALETTE to give every value its own color."
+            f"NOTE: {COLOR_COLUMN} has {len(unpinned)} unpinned value(s) but only "
+            f"{len(available)} unused color(s) in COLOR_PALETTE — colors are reused (cycled). "
+            f"Add hex codes to COLOR_PALETTE, or pin values in COLOR_MAP, to give every "
+            f"value its own color."
         )
-    return {value: COLOR_PALETTE[i % len(COLOR_PALETTE)] for i, value in enumerate(uniques)}
+    return resolved
 
 
 def build_marker_map(values: pd.Series, log: list[str]) -> dict[str, str]:
@@ -409,17 +459,25 @@ def build_grid_image(
         ("logarithmic", 1, 1),
     )
 
-    fig, axes = plt.subplots(2, 2, figsize=GRID_FIGSIZE, dpi=DPI)
+    # Size the grid from the source PNGs themselves rather than a guessed
+    # figure size: each cell is made as large as the widest/tallest panel
+    # (they differ slightly, since bbox_inches="tight" trims each one to
+    # its own legend width), and every image is drawn at aspect="equal".
+    # A cell that is roomier than its image gets a little blank margin;
+    # nothing is stretched or skewed.
+    images = {kind: plt.imread(path) for kind, path in kind_paths.items()}
+    cell_height_px = max(image.shape[0] for image in images.values())
+    cell_width_px = max(image.shape[1] for image in images.values())
+    figure_width_in = 2 * cell_width_px / DPI
+    figure_height_in = 2 * cell_height_px / DPI + GRID_TITLE_IN
+
+    fig, axes = plt.subplots(2, 2, figsize=(figure_width_in, figure_height_in), dpi=DPI)
     missing = 0
     for kind, row, col in grid_layout:
         ax = axes[row, col]
-        path = kind_paths.get(kind)
-        if path is not None:
-            # aspect="auto" fills the whole cell — the source PNGs are wide
-            # (external legend) relative to a square grid cell, and letting
-            # imshow preserve their exact pixel aspect ratio would letterbox
-            # each cell with large blank margins instead.
-            ax.imshow(plt.imread(path), aspect="auto")
+        image = images.get(kind)
+        if image is not None:
+            ax.imshow(image, aspect="equal")
         else:
             missing += 1
             ax.text(0.5, 0.5, "Not available", ha="center", va="center")
@@ -432,7 +490,14 @@ def build_grid_image(
     # axis("off") quadrants need none of matplotlib's default margin
     # reserved for tick/axis labels — reclaim it so the four images fill
     # the figure instead of floating in a sea of blank border.
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.01, wspace=0.02, hspace=0.06)
+    fig.subplots_adjust(
+        left=0.0,
+        right=1.0,
+        top=1.0 - GRID_TITLE_IN / figure_height_in,
+        bottom=0.0,
+        wspace=0.0,
+        hspace=0.0,
+    )
     safe_column = column.replace("/", "-")
     output_path = OUTPUT_DIR / f"{safe_column}_vs_{X_COLUMN}_grid_{timestamp}.png"
     if output_path.exists():
@@ -645,6 +710,12 @@ def validate_config(df: pd.DataFrame) -> None:
         raise ValueError(f"MARKER_COLUMN '{MARKER_COLUMN}' must be one of LEGEND_COLUMNS {LEGEND_COLUMNS}")
     if not COLOR_PALETTE:
         raise ValueError("COLOR_PALETTE must contain at least one hex color code")
+    for value, color in COLOR_MAP.items():
+        if not mcolors.is_color_like(color):
+            raise ValueError(f"COLOR_MAP['{value}'] is not a valid color: {color!r}")
+    for color in COLOR_PALETTE:
+        if not mcolors.is_color_like(color):
+            raise ValueError(f"COLOR_PALETTE entry is not a valid color: {color!r}")
 
 
 def resolve_grouping_mode() -> str:
