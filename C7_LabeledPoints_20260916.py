@@ -1,5 +1,32 @@
 """
-Properties-vs-Gray-Value plotting and regression script.
+Properties-vs-Gray-Value plotting with NUMBERED data points (C7).
+
+Same plots, styling and regressions as C6_PropertiesGrayValue.py, with
+one addition aimed squarely at chasing down outliers: every plotted
+point is annotated with its own number, and that number is the point's
+ROW NUMBER in the input CSV (the first data row is point 1, the second
+is point 2, ...). Spot a stray point on a chart, read its number, and
+look that number up in the point key CSV this script writes alongside
+the plots to get straight back to the Sample ID, the category columns,
+the gray value and every property value on that row.
+
+Three kinds of output make that round trip:
+  1. The plots themselves, with each point captioned by its number.
+  2. point_key_<timestamp>.csv — one row per input data row: its point
+     number, the line it sits on in the input file, its Sample ID, its
+     legend/category values, its designation, its X value, and its
+     value in every plotted y-column. This is the "what is point 17?"
+     lookup table.
+  3. point_residuals_<timestamp>.csv (EXPORT_RESIDUAL_OUTLIERS) — one
+     row per point per fitted regression, with that point's residual
+     from its group's fit line and that residual expressed in standard
+     deviations, flagged when it exceeds OUTLIER_SIGMA. This is the
+     "which points ARE the outliers?" table: sort it by Abs Std
+     Residual and the worst offenders, with their Sample IDs, are at
+     the top.
+
+Everything else below is C6's behavior, reproduced here so this script
+stands alone.
 
 Reads a combined properties CSV (the same kind of file produced by
 C4_combine_csv_folder.py / C4: one row per Sample ID, with a "Gray Value"
@@ -53,8 +80,9 @@ Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependencies: pandas, numpy, matplotlib.
 
 This script is standalone — it does not import or depend on any other
-script in this repository. It merely consumes C4_combine_csv_folder.py's
-output file as input.
+script in this repository (C6 included). It merely consumes
+C4_combine_csv_folder.py's output file as input, exactly as C6 does, so
+the two can be run over the same file and compared point for point.
 """
 
 from __future__ import annotations
@@ -81,8 +109,10 @@ from matplotlib.lines import Line2D
 # among its others.
 INPUT_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/data_combined_20260908_124308.csv')
 
-# Directory the plot PNGs and regression stats CSV are written into.
-OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code6_Outputs')
+# Directory the plot PNGs, point key and regression stats CSVs are
+# written into. Kept separate from C6's output folder so the two runs'
+# files never mingle.
+OUTPUT_DIR = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code7_Outputs')
 
 # Column used as the x-axis for every scatterplot/regression.
 X_COLUMN = "Gray Value"
@@ -207,6 +237,55 @@ WRITE_DESIGNATION_STATS_CSV = True
 # variant, designated or not) in that second CSV, for comparison
 # against its "1" and "2" rows.
 INCLUDE_ALL_ROW_IN_DESIGNATION_STATS = True
+
+# ---------------------------------------------------------------------
+# Point numbering (this script's reason for existing)
+# ---------------------------------------------------------------------
+
+# Draw each point's number next to it. Turn this off to get C6's plain
+# plots while still writing the point key and residual CSVs.
+SHOW_POINT_LABELS = True
+
+# Number given to the FIRST DATA ROW of the input CSV. With the default
+# 1, point numbers are "1 = first data row", and a point's line in the
+# file (as a spreadsheet shows it, header on line 1) is its number + 1 —
+# the point key CSV lists both, so neither has to be worked out by hand.
+POINT_LABEL_START = 1
+
+# Point-number text size, and its offset from the point in typographic
+# points (right and up by default, so the number sits clear of the
+# marker).
+POINT_LABEL_FONTSIZE = 7
+POINT_LABEL_OFFSET: tuple[float, float] = (4.0, 4.0)
+
+# True  -> each number takes its own point's category color (so Horz
+#          numbers are blue and Vert numbers red, matching the points).
+# False -> every number is drawn in POINT_LABEL_COLOR.
+POINT_LABEL_COLOR_FROM_POINT = True
+POINT_LABEL_COLOR = "#000000"
+
+# ---------------------------------------------------------------------
+# Outlier tracing
+# ---------------------------------------------------------------------
+
+# Write point_residuals_<timestamp>.csv: every plotted point's distance
+# from its own group's fit line, in the space that regression was fit
+# in, together with that point's number and Sample ID. Sort the file by
+# "Abs Std Residual" (descending) to rank candidate outliers.
+EXPORT_RESIDUAL_OUTLIERS = True
+
+# Residuals for every scale variant (linear, log-x, log-y, log-log), or
+# only for BASE_REGRESSION_KIND? The base plot alone keeps the file
+# small and is usually what you are looking at; True is for when the
+# outlier only stands out on a log plot.
+RESIDUALS_FOR_ALL_VARIANTS = False
+
+# A point is flagged ("Outlier" = True) when its residual is at least
+# this many standard deviations from its group's fit line. The residual
+# and its standardized value are written for EVERY point either way —
+# this only sets the flag column, so raising or lowering it never hides
+# a row.
+OUTLIER_SIGMA = 2.0
 
 # ---------------------------------------------------------------------
 # Regression display / grouping
@@ -435,6 +514,31 @@ SAVE_LOG_PLOTS = False
 #    been composited from them, so they never appear in OUTPUT_DIR.
 #    When neither is on, nothing needs them drawn and no figure is
 #    created for them at all.
+#  - Point numbers: assigned once per INPUT ROW, before any
+#    per-column filtering, counting from POINT_LABEL_START over the
+#    file's data rows in file order. A row therefore carries the SAME
+#    number in every plot it appears in, and a row dropped from one
+#    column's plot (blank/non-numeric there, or non-positive on a
+#    log-scaled axis) leaves its number simply absent from that plot
+#    rather than renumbering anything. Numbers are drawn with
+#    ax.annotate at POINT_LABEL_OFFSET from the marker; overlapping
+#    numbers are not de-cluttered, so on a dense plot expect to zoom in
+#    on the saved PNG (raise DPI if that is a regular need).
+#  - Point key CSV (always written): one row per input data row —
+#    Point Number, CSV Line (its line in the input file, header = 1),
+#    the Sample ID, every LEGEND_COLUMNS value, the Designation, the
+#    X_COLUMN value, and that row's value in every plotted y-column. A
+#    blank y-column cell means that row was not plotted for that column.
+#  - Residual CSV (EXPORT_RESIDUAL_OUTLIERS): one row per point per
+#    fitted (column, variant, group), holding the point's X and Y as
+#    plotted, the fitted value and residual in the space the regression
+#    was fit in (natural log wherever that axis is log-scaled, so for
+#    the linear variant these are the data's own units), the residual
+#    divided by the group's residual standard deviation, and an Outlier
+#    flag for |Std Residual| >= OUTLIER_SIGMA. Groups are the same ones
+#    the main regression stats CSV uses. A group of fewer than 3 points
+#    has no meaningful residual spread, so its standardized residuals
+#    are written as blank (the raw residuals are still there).
 #  - Output: one PNG per plotted (column, variant) pair
 #    (<column>_vs_<X_COLUMN><variant_suffix>_plot_<timestamp>.png,
 #    variant_suffix one of "", "_logx", "_logy", "_loglog"; a literal
@@ -642,6 +746,71 @@ def fit_line(
     return float(slope), float(intercept), r_squared
 
 
+def build_residual_rows(
+    *,
+    column: str,
+    kind: str,
+    group_desc: str,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    log_x: bool,
+    log_y: bool,
+    slope: float,
+    intercept: float,
+    point_numbers: np.ndarray,
+    sample_ids: np.ndarray,
+    labels: np.ndarray,
+    designations: np.ndarray,
+) -> list[dict]:
+    """One row per point: how far it sits from its group's fit line.
+
+    Residuals are taken in the space the regression was fit in (natural
+    log wherever that axis is log-scaled), so they are directly
+    comparable to that variant's slope/intercept; for the linear
+    variant they are in the data's own units. "Std Residual" divides by
+    the group's residual standard deviation, which is what makes points
+    comparable ACROSS columns and variants — a group of fewer than 3
+    points, or one whose residuals are all identical, has no usable
+    spread, so its standardized values (and the Outlier flag) are left
+    blank rather than invented.
+    """
+    x_fit = np.log(xs) if log_x else xs
+    y_fit = np.log(ys) if log_y else ys
+    predicted = slope * x_fit + intercept
+    residuals = y_fit - predicted
+
+    # ddof=2 — a straight line through n points spends two degrees of
+    # freedom, so this is the usual regression residual standard error.
+    spread = float(np.std(residuals, ddof=2)) if len(residuals) > 2 else 0.0
+    usable_spread = spread > 0.0
+
+    rows: list[dict] = []
+    for i in range(len(residuals)):
+        residual = float(residuals[i])
+        standardized = residual / spread if usable_spread else None
+        rows.append(
+            {
+                "Column": column,
+                "Regression Type": kind,
+                "Group": group_desc,
+                "Point Number": point_numbers[i],
+                "Sample ID": sample_ids[i],
+                "Label": labels[i],
+                "Designation": designations[i],
+                X_COLUMN: float(xs[i]),
+                "Y Value": float(ys[i]),
+                "Fitted (fit space)": float(predicted[i]),
+                "Residual (fit space)": residual,
+                "Std Residual": standardized,
+                "Abs Std Residual": abs(standardized) if standardized is not None else None,
+                "Outlier": (
+                    abs(standardized) >= OUTLIER_SIGMA if standardized is not None else None
+                ),
+            }
+        )
+    return rows
+
+
 def build_line_style_map(values: pd.Series) -> dict[str, str]:
     """Assign each unique MARKER_COLUMN value a fit-line dash style, in sorted order."""
     uniques = sorted(values.unique())
@@ -722,6 +891,8 @@ def fit_and_plot_variant(
     y_all: pd.Series,
     categories_all: pd.DataFrame,
     designations_all: pd.Series,
+    point_numbers_all: pd.Series,
+    sample_ids_all: pd.Series,
     color_map: dict[str, str],
     marker_map: dict[str, str],
     line_style_map: dict[str, str],
@@ -753,8 +924,13 @@ def fit_and_plot_variant(
     solid vs hollow fill and drives the second, designation-only set of
     regression rows. grouping_mode is one of "all", "color", "marker",
     "both" (see GROUP_REGRESSION_BY_COLOR / GROUP_REGRESSION_BY_MARKER).
-    Returns (regression_stats rows, designation_stats rows, output PNG
-    path or None if nothing was plotted for lack of valid points).
+    point_numbers_all is each input row's point number (its row number
+    in the input CSV) and sample_ids_all its Sample ID; they caption the
+    plotted points and identify them in the residual rows.
+
+    Returns (regression_stats rows, designation_stats rows, residual
+    rows, output PNG path or None if nothing was plotted for lack of
+    valid points).
     """
     valid = x_all.notna() & y_all.notna()
     if log_x:
@@ -769,12 +945,14 @@ def fit_and_plot_variant(
             f"{X_COLUMN} and '{column}' present{positivity_note} "
             f"({valid.sum()} found) — cannot fit a regression"
         )
-        return [], [], None
+        return [], [], [], None
 
     x = x_all[valid]
     y = y_all[valid]
     categories = categories_all[valid]
     designation_np = designations_all[valid].to_numpy()
+    point_np = point_numbers_all[valid].to_numpy()
+    sample_id_np = sample_ids_all[valid].to_numpy()
 
     fig, ax = (plt.subplots(figsize=FIGSIZE, dpi=DPI) if render else (None, None))
 
@@ -837,6 +1015,19 @@ def fit_and_plot_variant(
                 f"{label} ({designation})" if designation and SHOW_DESIGNATION_IN_LEGEND else label
             )
 
+        if SHOW_POINT_LABELS:
+            # Drawn in one pass over every point, after the series, so a
+            # number is never hidden under a marker drawn later.
+            for x_point, y_point, number, color_key in zip(x_np, y_np, point_np, color_np):
+                ax.annotate(
+                    str(number),
+                    (x_point, y_point),
+                    textcoords="offset points",
+                    xytext=POINT_LABEL_OFFSET,
+                    fontsize=POINT_LABEL_FONTSIZE,
+                    color=color_map[color_key] if POINT_LABEL_COLOR_FROM_POINT else POINT_LABEL_COLOR,
+                )
+
     if grouping_mode == "both":
         group_keys = sorted(label_keys)
     elif grouping_mode == "color":
@@ -847,6 +1038,10 @@ def fit_and_plot_variant(
         group_keys = ["All"]
 
     regression_rows: list[dict] = []
+    residual_rows: list[dict] = []
+    collect_residuals = EXPORT_RESIDUAL_OUTLIERS and (
+        RESIDUALS_FOR_ALL_VARIANTS or kind == BASE_REGRESSION_KIND
+    )
     fit_handles: list[object] = []
     fit_labels: list[str] = []
 
@@ -883,6 +1078,25 @@ def fit_and_plot_variant(
             continue
 
         slope, intercept, r_squared = fit_line(xs, ys, log_x, log_y)
+
+        if collect_residuals:
+            residual_rows.extend(
+                build_residual_rows(
+                    column=column,
+                    kind=kind,
+                    group_desc=group_desc,
+                    xs=xs,
+                    ys=ys,
+                    log_x=log_x,
+                    log_y=log_y,
+                    slope=slope,
+                    intercept=intercept,
+                    point_numbers=point_np[group_mask],
+                    sample_ids=sample_id_np[group_mask],
+                    labels=label_np[group_mask],
+                    designations=designation_np[group_mask],
+                )
+            )
 
         # The fit is still computed (and recorded below) when
         # SHOW_FIT_LINES is off — only the drawing is skipped.
@@ -950,7 +1164,7 @@ def fit_and_plot_variant(
             )
 
     if not render:
-        return regression_rows, designation_rows, None
+        return regression_rows, designation_rows, residual_rows, None
 
     # Fit entries (when shown) lead the legend, category entries follow.
     legend_handles = fit_handles + legend_handles
@@ -975,7 +1189,7 @@ def fit_and_plot_variant(
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
-    return regression_rows, designation_rows, output_path
+    return regression_rows, designation_rows, residual_rows, output_path
 
 
 def validate_config(df: pd.DataFrame) -> None:
@@ -1009,6 +1223,9 @@ def validate_config(df: pd.DataFrame) -> None:
             "SAVE_ALL_PLOT_VARIANTS line and set those two instead — "
             "SAVE_ALL_PLOT_VARIANTS = True is now SAVE_LOG_PLOTS = True."
         )
+
+    if OUTLIER_SIGMA <= 0:
+        raise ValueError(f"OUTLIER_SIGMA must be positive, got {OUTLIER_SIGMA}")
 
     if DESIGNATION_FIELD_INDEX < 0 or DESIGNATION_FIELD_INDEX > DESIGNATION_UNDERSCORE_COUNT:
         raise ValueError(
@@ -1050,6 +1267,19 @@ def run() -> None:
 
     categories_all = build_legend_labels(df)
     designations_all = build_designations(df, log)
+
+    # Point numbers are assigned over the file's data rows, once, before
+    # any per-column filtering — so a row keeps the same number in every
+    # plot it appears in. "CSV Line" is where a spreadsheet shows that
+    # row, with the header occupying line 1.
+    point_numbers_all = pd.Series(
+        range(POINT_LABEL_START, POINT_LABEL_START + len(df)), index=df.index
+    )
+    csv_lines_all = pd.Series(range(2, 2 + len(df)), index=df.index)
+    if SAMPLE_ID_COLUMN in df.columns:
+        sample_ids_all = df[SAMPLE_ID_COLUMN].fillna("").astype(str)
+    else:
+        sample_ids_all = pd.Series([""] * len(df), index=df.index, dtype=object)
     color_map = build_color_map(categories_all[COLOR_COLUMN], log)
     if MARKER_COLUMN is not None:
         marker_map = build_marker_map(categories_all[MARKER_COLUMN], log)
@@ -1065,6 +1295,8 @@ def run() -> None:
 
     regression_rows: list[dict] = []
     designation_rows: list[dict] = []
+    residual_rows: list[dict] = []
+    plotted_y_columns: dict[str, pd.Series] = {}
     grid_images_written = 0
     plots_written = 0
 
@@ -1075,6 +1307,8 @@ def run() -> None:
         y_all = pd.to_numeric(df[column], errors="coerce")
         if y_all.notna().sum() == 0:
             continue  # not a numeric column (e.g. Sample ID, Notes) — skip silently
+
+        plotted_y_columns[column] = y_all
 
         # A variant is KEPT if its own PNG is wanted, and RENDERED if it
         # is kept or if the grid image needs it composited in. One that
@@ -1087,12 +1321,19 @@ def run() -> None:
             for kind, log_x, log_y, filename_suffix, title_suffix in REGRESSION_KINDS:
                 keep = SAVE_LOG_PLOTS or kind == BASE_REGRESSION_KIND
                 render = keep or SAVE_GRID_IMAGE
-                rows, designation_group_rows, output_path = fit_and_plot_variant(
+                (
+                    rows,
+                    designation_group_rows,
+                    variant_residual_rows,
+                    output_path,
+                ) = fit_and_plot_variant(
                     column,
                     x_all,
                     y_all,
                     categories_all,
                     designations_all,
+                    point_numbers_all,
+                    sample_ids_all,
                     color_map,
                     marker_map,
                     line_style_map,
@@ -1109,6 +1350,7 @@ def run() -> None:
                 )
                 regression_rows.extend(rows)
                 designation_rows.extend(designation_group_rows)
+                residual_rows.extend(variant_residual_rows)
                 if output_path is not None:
                     kind_paths[kind] = output_path
                     if keep:
@@ -1146,6 +1388,26 @@ def run() -> None:
         print("\nNo columns had enough numeric data to plot/regress — no output written.")
         return
 
+    # ----- the point key: what is point 17?
+    point_key = pd.DataFrame(
+        {
+            "Point Number": point_numbers_all,
+            "CSV Line": csv_lines_all,
+            "Sample ID": sample_ids_all,
+        }
+    )
+    for legend_column in LEGEND_COLUMNS:
+        point_key[legend_column] = categories_all[legend_column]
+    point_key["Designation"] = designations_all
+    point_key[X_COLUMN] = x_all
+    for column, values in plotted_y_columns.items():
+        point_key[column] = values
+
+    point_key_path = OUTPUT_DIR / f"point_key_{timestamp}.csv"
+    if point_key_path.exists():
+        raise FileExistsError(f"Refusing to overwrite existing output file: {point_key_path}")
+    point_key.to_csv(point_key_path, index=False)
+
     regression_df = pd.DataFrame(
         regression_rows, columns=["Column", "Regression Type", "Group", "Slope", "Intercept", "R^2", "N"]
     )
@@ -1167,11 +1429,53 @@ def run() -> None:
             )
         designation_df.to_csv(designation_stats_path, index=False)
 
+    residual_path: Path | None = None
+    flagged_outliers = 0
+    if EXPORT_RESIDUAL_OUTLIERS and residual_rows:
+        residual_df = pd.DataFrame(
+            residual_rows,
+            columns=[
+                "Column",
+                "Regression Type",
+                "Group",
+                "Point Number",
+                "Sample ID",
+                "Label",
+                "Designation",
+                X_COLUMN,
+                "Y Value",
+                "Fitted (fit space)",
+                "Residual (fit space)",
+                "Std Residual",
+                "Abs Std Residual",
+                "Outlier",
+            ],
+        )
+        # Worst offenders first: the top of the file is the list of
+        # points to go and look at.
+        residual_df = residual_df.sort_values(
+            "Abs Std Residual", ascending=False, na_position="last", kind="stable"
+        )
+        flagged_outliers = int(residual_df["Outlier"].fillna(False).sum())
+        residual_path = OUTPUT_DIR / f"point_residuals_{timestamp}.csv"
+        if residual_path.exists():
+            raise FileExistsError(f"Refusing to overwrite existing output file: {residual_path}")
+        residual_df.to_csv(residual_path, index=False)
+
     print("\n--- Summary ---")
     print(f"  Regression fits computed: {len(regression_rows)}")
     print(f"  Standalone plot PNGs saved: {plots_written}")
     print(f"  Grid images generated: {grid_images_written}")
     print(f"  Columns covered: {sorted({r['Column'] for r in regression_rows})}")
+    print(f"  Points numbered: {len(point_key)} (point {POINT_LABEL_START} = first data row)")
+    print(f"  Point key file: {point_key_path}")
+    if residual_path is not None:
+        print(
+            f"  Point residual file: {residual_path} "
+            f"({flagged_outliers} row(s) flagged at |Std Residual| >= {OUTLIER_SIGMA})"
+        )
+    elif EXPORT_RESIDUAL_OUTLIERS:
+        print("  Point residual file: not written (no regression had residuals to report)")
     print(f"  Regression stats file: {stats_path}")
     if designation_stats_path is not None:
         print(f"  Per-designation stats file: {designation_stats_path}")
