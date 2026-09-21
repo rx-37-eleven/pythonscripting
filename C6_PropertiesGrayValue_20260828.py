@@ -49,6 +49,14 @@ SAVE_LOG_PLOTS keeps the three log variants as their own PNGs (the
 base plot is always kept), and SAVE_GRID_IMAGE writes the combined
 2x2 grid. With both off, the log variants are fitted but never drawn.
 
+A handful of points can be singled out for a closer look: set
+HIGHLIGHT_CSV_PATH to a second CSV — in practice a copy of the input
+file with all but the rows of interest deleted — and every matching
+point is drawn with a thin green ring around it on every plot. The
+color, thickness and diameter of the ring are all config options, and
+nothing that is computed changes: the regressions and the CSVs come
+out exactly as they would without it.
+
 Run this from Spyder: edit the CONFIG block below, then press Run.
 Non-stdlib dependencies: pandas, numpy, matplotlib.
 
@@ -319,6 +327,47 @@ SAVE_LOG_PLOTS = False
 #                             the fastest combination.
 
 # ---------------------------------------------------------------------
+# Circled points (a second CSV naming the points to ring)
+# ---------------------------------------------------------------------
+
+# Optional second CSV naming points to CIRCLE on every plot. The
+# intended workflow: take a copy of the input file, delete every row
+# but the handful you want to look at, and point this at that copy —
+# those rows' points are then drawn with a thin ring around them in
+# every plot, while every other point is drawn exactly as before.
+#
+# Set to None (the default) to switch the feature off entirely: no file
+# is read and no circles are drawn. Only HIGHLIGHT_MATCH_COLUMN is read
+# out of the file, so the copy can keep all of its other columns or
+# none of them — deleting rows is enough, nothing else has to be edited.
+HIGHLIGHT_CSV_PATH: Path | None = None
+# HIGHLIGHT_CSV_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/points_to_circle.csv')
+
+# The column matched between the two files to decide which points get
+# circled. It must exist in BOTH the input CSV and the highlight CSV.
+# "Sample ID" is the natural key: it names the same specimen no matter
+# how either file is sorted, filtered or regenerated. Values are
+# compared trimmed and case-insensitively; a highlight row matching no
+# input row is reported under "Skipped / logged items" rather than
+# stopping the run.
+HIGHLIGHT_MATCH_COLUMN = "Sample ID"
+
+# Circle appearance. The diameter is in typographic points — a SCREEN
+# size, like a font size, not data units — so the ring is the same
+# circle on the linear plot and on the log-log one, and stays centered
+# on its point whatever the axes do. Keep it comfortably bigger than
+# the marker it rings: POINT_SIZE is an AREA in points^2, so its marker
+# is about sqrt(POINT_SIZE) ~ 4.5 points across at the default 20.
+HIGHLIGHT_CIRCLE_COLOR = "#00A000"      # green
+HIGHLIGHT_CIRCLE_DIAMETER = 14.0        # points across (screen size)
+HIGHLIGHT_CIRCLE_LINEWIDTH = 0.8        # ring thickness in points
+
+# Give the circled points one legend entry of their own, drawn as the
+# ring itself and listed after the category entries.
+SHOW_HIGHLIGHT_IN_LEGEND = True
+HIGHLIGHT_LEGEND_LABEL = "Circled (highlight CSV)"
+
+# ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
 # brief's "definition of done"):
 #
@@ -453,6 +502,23 @@ SAVE_LOG_PLOTS = False
 #    fitted (column, variant, group) triple. Figures are saved only —
 #    no interactive plt.show() call. Never overwrites an existing file
 #    of the same name.
+#  - Circled points (HIGHLIGHT_CSV_PATH): an optional second CSV whose
+#    HIGHLIGHT_MATCH_COLUMN values ("Sample ID" by default) name the
+#    input rows to ring. It is meant to be a copy of the input file
+#    with all but a handful of rows deleted, but any file carrying that
+#    one column will do. Values are matched trimmed and
+#    case-insensitively; a key matching no input row is logged and
+#    otherwise ignored, and duplicate keys simply collapse. A matched
+#    row is ringed in EVERY plot it appears in (all four scale
+#    variants, and the grid image built from them) — a row filtered out
+#    of one column's plot is not ringed there, since it isn't drawn
+#    there at all. The ring is drawn with scatter at a fixed screen
+#    size (HIGHLIGHT_CIRCLE_DIAMETER points across, s = d**2 in
+#    points^2) so it is the same circle on a linear and a log axis, in
+#    HIGHLIGHT_CIRCLE_COLOR at HIGHLIGHT_CIRCLE_LINEWIDTH, above the
+#    markers and fit lines (zorder 3). It changes nothing that is
+#    computed: the regressions, the stats CSVs and every other output
+#    are identical whether or not a highlight file is given.
 # =====================================================================
 
 
@@ -623,6 +689,61 @@ def build_designations(df: pd.DataFrame, log: list[str]) -> pd.Series:
     return designations
 
 
+def load_highlight_keys(log: list[str]) -> set[str]:
+    """Read HIGHLIGHT_CSV_PATH and return its match values, normalized.
+
+    Keys come back trimmed and lowercased, so matching them against the
+    input file's own column ignores case and stray whitespace. Returns
+    an empty set when HIGHLIGHT_CSV_PATH is None (feature off).
+    """
+    if HIGHLIGHT_CSV_PATH is None:
+        return set()
+
+    highlight_df = pd.read_csv(HIGHLIGHT_CSV_PATH)
+    if HIGHLIGHT_MATCH_COLUMN not in highlight_df.columns:
+        raise ValueError(
+            f"HIGHLIGHT_MATCH_COLUMN '{HIGHLIGHT_MATCH_COLUMN}' not found in the highlight "
+            f"file '{HIGHLIGHT_CSV_PATH}' (its columns are {list(highlight_df.columns)})"
+        )
+
+    keys = {
+        str(value).strip().lower()
+        for value in highlight_df[HIGHLIGHT_MATCH_COLUMN]
+        if not pd.isna(value) and str(value).strip()
+    }
+    if not keys:
+        log.append(
+            f"NOTE: the highlight file '{HIGHLIGHT_CSV_PATH}' has no usable "
+            f"'{HIGHLIGHT_MATCH_COLUMN}' value — no points are circled."
+        )
+    return keys
+
+
+def build_highlight_mask(df: pd.DataFrame, keys: set[str], log: list[str]) -> pd.Series:
+    """Flag every input row whose match value appears in the highlight file.
+
+    Rows flagged here are ringed in every plot they appear in. A key in
+    the highlight file that matches no input row is logged by name —
+    that is usually a typo or a Sample ID that the input file does not
+    (or no longer) carry.
+    """
+    if not keys:
+        return pd.Series(False, index=df.index)
+
+    normalized = df[HIGHLIGHT_MATCH_COLUMN].apply(
+        lambda value: "" if pd.isna(value) else str(value).strip().lower()
+    )
+    mask = normalized.isin(keys)
+
+    unmatched = sorted(keys - set(normalized))
+    if unmatched:
+        log.append(
+            f"NOTE: {len(unmatched)} '{HIGHLIGHT_MATCH_COLUMN}' value(s) in the highlight file "
+            f"match no row of the input file and are not circled: {', '.join(unmatched)}"
+        )
+    return mask
+
+
 def fit_line(
     xs: np.ndarray, ys: np.ndarray, log_x: bool, log_y: bool
 ) -> tuple[float, float, float]:
@@ -722,6 +843,7 @@ def fit_and_plot_variant(
     y_all: pd.Series,
     categories_all: pd.DataFrame,
     designations_all: pd.Series,
+    highlights_all: pd.Series,
     color_map: dict[str, str],
     marker_map: dict[str, str],
     line_style_map: dict[str, str],
@@ -775,6 +897,7 @@ def fit_and_plot_variant(
     y = y_all[valid]
     categories = categories_all[valid]
     designation_np = designations_all[valid].to_numpy()
+    highlight_np = highlights_all[valid].to_numpy()
 
     fig, ax = (plt.subplots(figsize=FIGSIZE, dpi=DPI) if render else (None, None))
 
@@ -836,6 +959,38 @@ def fit_and_plot_variant(
             legend_labels.append(
                 f"{label} ({designation})" if designation and SHOW_DESIGNATION_IN_LEGEND else label
             )
+
+        if highlight_np.any():
+            # One ring per highlighted point, drawn over the markers.
+            # scatter's s is an AREA in points^2, so a ring
+            # HIGHLIGHT_CIRCLE_DIAMETER points across is s = d**2 —
+            # a screen size, identical on every scale variant and
+            # independent of the axes' units.
+            ax.scatter(
+                x_np[highlight_np],
+                y_np[highlight_np],
+                s=HIGHLIGHT_CIRCLE_DIAMETER ** 2,
+                marker="o",
+                facecolors="none",
+                edgecolors=HIGHLIGHT_CIRCLE_COLOR,
+                linewidths=HIGHLIGHT_CIRCLE_LINEWIDTH,
+                zorder=3,
+            )
+            if SHOW_HIGHLIGHT_IN_LEGEND:
+                legend_handles.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        linestyle="none",
+                        color=HIGHLIGHT_CIRCLE_COLOR,
+                        markerfacecolor="none",
+                        markeredgecolor=HIGHLIGHT_CIRCLE_COLOR,
+                        markeredgewidth=HIGHLIGHT_CIRCLE_LINEWIDTH,
+                        markersize=HIGHLIGHT_CIRCLE_DIAMETER,
+                    )
+                )
+                legend_labels.append(HIGHLIGHT_LEGEND_LABEL)
 
     if grouping_mode == "both":
         group_keys = sorted(label_keys)
@@ -1017,6 +1172,27 @@ def validate_config(df: pd.DataFrame) -> None:
             f"{DESIGNATION_UNDERSCORE_COUNT}"
         )
 
+    if HIGHLIGHT_CSV_PATH is not None:
+        if not Path(HIGHLIGHT_CSV_PATH).is_file():
+            raise ValueError(f"HIGHLIGHT_CSV_PATH is not an existing file: {HIGHLIGHT_CSV_PATH}")
+        if HIGHLIGHT_MATCH_COLUMN not in df.columns:
+            raise ValueError(
+                f"HIGHLIGHT_MATCH_COLUMN '{HIGHLIGHT_MATCH_COLUMN}' not found in the input file "
+                f"'{INPUT_PATH}' — it has to exist in both the input CSV and the highlight CSV"
+            )
+        if not mcolors.is_color_like(HIGHLIGHT_CIRCLE_COLOR):
+            raise ValueError(
+                f"HIGHLIGHT_CIRCLE_COLOR is not a valid color: {HIGHLIGHT_CIRCLE_COLOR!r}"
+            )
+        if HIGHLIGHT_CIRCLE_DIAMETER <= 0:
+            raise ValueError(
+                f"HIGHLIGHT_CIRCLE_DIAMETER must be positive, got {HIGHLIGHT_CIRCLE_DIAMETER}"
+            )
+        if HIGHLIGHT_CIRCLE_LINEWIDTH <= 0:
+            raise ValueError(
+                f"HIGHLIGHT_CIRCLE_LINEWIDTH must be positive, got {HIGHLIGHT_CIRCLE_LINEWIDTH}"
+            )
+
     known_kinds = [kind for kind, *_ in REGRESSION_KINDS]
     if BASE_REGRESSION_KIND not in known_kinds:
         raise ValueError(
@@ -1050,6 +1226,7 @@ def run() -> None:
 
     categories_all = build_legend_labels(df)
     designations_all = build_designations(df, log)
+    highlights_all = build_highlight_mask(df, load_highlight_keys(log), log)
     color_map = build_color_map(categories_all[COLOR_COLUMN], log)
     if MARKER_COLUMN is not None:
         marker_map = build_marker_map(categories_all[MARKER_COLUMN], log)
@@ -1093,6 +1270,7 @@ def run() -> None:
                     y_all,
                     categories_all,
                     designations_all,
+                    highlights_all,
                     color_map,
                     marker_map,
                     line_style_map,
@@ -1172,6 +1350,11 @@ def run() -> None:
     print(f"  Standalone plot PNGs saved: {plots_written}")
     print(f"  Grid images generated: {grid_images_written}")
     print(f"  Columns covered: {sorted({r['Column'] for r in regression_rows})}")
+    if HIGHLIGHT_CSV_PATH is not None:
+        print(
+            f"  Points circled: {int(highlights_all.sum())} row(s) matched by "
+            f"'{HIGHLIGHT_MATCH_COLUMN}' from '{HIGHLIGHT_CSV_PATH}'"
+        )
     print(f"  Regression stats file: {stats_path}")
     if designation_stats_path is not None:
         print(f"  Per-designation stats file: {designation_stats_path}")

@@ -3,9 +3,12 @@ Properties-vs-Gray-Value plotting with NUMBERED data points (C7).
 
 Same plots, styling and regressions as C6_PropertiesGrayValue.py, with
 one addition aimed squarely at chasing down outliers: every plotted
-point is annotated with its own number, and that number is the point's
-ROW NUMBER in the input CSV (the first data row is point 1, the second
-is point 2, ...). Spot a stray point on a chart, read its number, and
+point is annotated with its own number. By default that number is the
+point's ROW NUMBER in the input CSV (the first data row is point 1,
+the second is point 2, ...); turn USE_POINT_NUMBER_COLUMN on and it is
+read from the file's own "Point Number" column instead, so numbers
+handed out by an earlier run survive the file being re-sorted or cut
+down. Spot a stray point on a chart, read its number, and
 look that number up in the point key CSV this script writes alongside
 the plots to get straight back to the Sample ID, the category columns,
 the gray value and every property value on that row.
@@ -24,6 +27,14 @@ Three kinds of output make that round trip:
      "which points ARE the outliers?" table: sort it by Abs Std
      Residual and the worst offenders, with their Sample IDs, are at
      the top.
+
+A handful of points can be singled out for a closer look: set
+HIGHLIGHT_CSV_PATH to a second CSV — in practice a copy of the input
+file with all but the rows of interest deleted — and every matching
+point is drawn with a thin green ring around it on every plot. The
+color, thickness and diameter of the ring are all config options, and
+nothing that is computed changes: the regressions and the CSVs come
+out exactly as they would without it.
 
 Everything else below is C6's behavior, reproduced here so this script
 stands alone.
@@ -246,10 +257,35 @@ INCLUDE_ALL_ROW_IN_DESIGNATION_STATS = True
 # plots while still writing the point key and residual CSVs.
 SHOW_POINT_LABELS = True
 
-# Number given to the FIRST DATA ROW of the input CSV. With the default
-# 1, point numbers are "1 = first data row", and a point's line in the
-# file (as a spreadsheet shows it, header on line 1) is its number + 1 —
-# the point key CSV lists both, so neither has to be worked out by hand.
+# Take each point's number from a COLUMN of the input CSV instead of
+# counting the rows.
+#
+#   False (default) -> the script numbers the points itself, counting
+#                      the file's data rows from POINT_LABEL_START.
+#   True            -> the number is read from POINT_NUMBER_COLUMN, so
+#                      a point keeps the number it was given in an
+#                      earlier run even after the file has been sorted,
+#                      re-cut or had rows deleted. Feed an earlier run's
+#                      point_key CSV (or the input file with that
+#                      column pasted in) back through this script and
+#                      the numbers on the plots stay the ones you have
+#                      already been reading off them.
+#
+# With it on, anything the column cannot supply falls back to that
+# row's counted number and is reported under "Skipped / logged items":
+# the column missing from the file altogether, a blank cell, or a value
+# that is not a number. Whether it is on or not, POINT_NUMBER_COLUMN is
+# an identifier rather than a property, so it is never plotted as a
+# y-column when the input file happens to carry it.
+USE_POINT_NUMBER_COLUMN = False
+POINT_NUMBER_COLUMN = "Point Number"
+
+# Number given to the FIRST DATA ROW of the input CSV when the script
+# is numbering the points itself (USE_POINT_NUMBER_COLUMN = False, or a
+# row the column could not supply). With the default 1, point numbers
+# are "1 = first data row", and a point's line in the file (as a
+# spreadsheet shows it, header on line 1) is its number + 1 — the point
+# key CSV lists both, so neither has to be worked out by hand.
 POINT_LABEL_START = 1
 
 # Point-number text size, and its offset from the point in typographic
@@ -398,6 +434,47 @@ SAVE_LOG_PLOTS = False
 #                             the fastest combination.
 
 # ---------------------------------------------------------------------
+# Circled points (a second CSV naming the points to ring)
+# ---------------------------------------------------------------------
+
+# Optional second CSV naming points to CIRCLE on every plot. The
+# intended workflow: take a copy of the input file, delete every row
+# but the handful you want to look at, and point this at that copy —
+# those rows' points are then drawn with a thin ring around them in
+# every plot, while every other point is drawn exactly as before.
+#
+# Set to None (the default) to switch the feature off entirely: no file
+# is read and no circles are drawn. Only HIGHLIGHT_MATCH_COLUMN is read
+# out of the file, so the copy can keep all of its other columns or
+# none of them — deleting rows is enough, nothing else has to be edited.
+HIGHLIGHT_CSV_PATH: Path | None = None
+# HIGHLIGHT_CSV_PATH = Path('/Users/rcaraway3/Dropbox/Research/Garmestani,Neu/TAMU,GT,EOS/Instron/PythonCode/Code_Inputs,Outputs/points_to_circle.csv')
+
+# The column matched between the two files to decide which points get
+# circled. It must exist in BOTH the input CSV and the highlight CSV.
+# "Sample ID" is the natural key: it names the same specimen no matter
+# how either file is sorted, filtered or regenerated. Values are
+# compared trimmed and case-insensitively; a highlight row matching no
+# input row is reported under "Skipped / logged items" rather than
+# stopping the run.
+HIGHLIGHT_MATCH_COLUMN = "Sample ID"
+
+# Circle appearance. The diameter is in typographic points — a SCREEN
+# size, like a font size, not data units — so the ring is the same
+# circle on the linear plot and on the log-log one, and stays centered
+# on its point whatever the axes do. Keep it comfortably bigger than
+# the marker it rings: POINT_SIZE is an AREA in points^2, so its marker
+# is about sqrt(POINT_SIZE) ~ 4.5 points across at the default 20.
+HIGHLIGHT_CIRCLE_COLOR = "#00A000"      # green
+HIGHLIGHT_CIRCLE_DIAMETER = 14.0        # points across (screen size)
+HIGHLIGHT_CIRCLE_LINEWIDTH = 0.8        # ring thickness in points
+
+# Give the circled points one legend entry of their own, drawn as the
+# ring itself and listed after the category entries.
+SHOW_HIGHLIGHT_IN_LEGEND = True
+HIGHLIGHT_LEGEND_LABEL = "Circled (highlight CSV)"
+
+# ---------------------------------------------------------------------
 # Resolved answers to the brief's open questions (captured here per the
 # brief's "definition of done"):
 #
@@ -515,8 +592,16 @@ SAVE_LOG_PLOTS = False
 #    When neither is on, nothing needs them drawn and no figure is
 #    created for them at all.
 #  - Point numbers: assigned once per INPUT ROW, before any
-#    per-column filtering, counting from POINT_LABEL_START over the
-#    file's data rows in file order. A row therefore carries the SAME
+#    per-column filtering. With USE_POINT_NUMBER_COLUMN off they are
+#    counted from POINT_LABEL_START over the file's data rows in file
+#    order; with it on they are read from POINT_NUMBER_COLUMN instead,
+#    falling back to the counted number (and logging it) for a row the
+#    column cannot supply — the column absent from the file, a blank
+#    cell, or a non-numeric value. A whole number read from the file is
+#    captioned as an integer ("7", not "7.0"), and a column whose
+#    values repeat is logged, since two points then carry the same
+#    caption. POINT_NUMBER_COLUMN is never plotted as a y-column.
+#    However the number was arrived at, a row carries the SAME
 #    number in every plot it appears in, and a row dropped from one
 #    column's plot (blank/non-numeric there, or non-positive on a
 #    log-scaled axis) leaves its number simply absent from that plot
@@ -557,6 +642,23 @@ SAVE_LOG_PLOTS = False
 #    fitted (column, variant, group) triple. Figures are saved only —
 #    no interactive plt.show() call. Never overwrites an existing file
 #    of the same name.
+#  - Circled points (HIGHLIGHT_CSV_PATH): an optional second CSV whose
+#    HIGHLIGHT_MATCH_COLUMN values ("Sample ID" by default) name the
+#    input rows to ring. It is meant to be a copy of the input file
+#    with all but a handful of rows deleted, but any file carrying that
+#    one column will do. Values are matched trimmed and
+#    case-insensitively; a key matching no input row is logged and
+#    otherwise ignored, and duplicate keys simply collapse. A matched
+#    row is ringed in EVERY plot it appears in (all four scale
+#    variants, and the grid image built from them) — a row filtered out
+#    of one column's plot is not ringed there, since it isn't drawn
+#    there at all. The ring is drawn with scatter at a fixed screen
+#    size (HIGHLIGHT_CIRCLE_DIAMETER points across, s = d**2 in
+#    points^2) so it is the same circle on a linear and a log axis, in
+#    HIGHLIGHT_CIRCLE_COLOR at HIGHLIGHT_CIRCLE_LINEWIDTH, above the
+#    markers and fit lines (zorder 3). It changes nothing that is
+#    computed: the regressions, the stats CSVs and every other output
+#    are identical whether or not a highlight file is given.
 # =====================================================================
 
 
@@ -699,6 +801,61 @@ def derive_designation(sample_id: object) -> str:
     return fields[DESIGNATION_FIELD_INDEX].strip()
 
 
+def resolve_point_numbers(df: pd.DataFrame, log: list[str]) -> pd.Series:
+    """Return each input row's point number, read from the file or counted.
+
+    With USE_POINT_NUMBER_COLUMN off (the default) the numbers are
+    simply counted over the file's data rows from POINT_LABEL_START.
+    With it on they are taken from POINT_NUMBER_COLUMN instead, so a
+    point keeps the number it already had in an earlier run's point key
+    even after the file has been re-sorted or cut down. Anything that
+    column cannot supply — the column missing altogether, a blank cell,
+    a value that is not a number — falls back to that row's counted
+    number and is reported in the run's log.
+    """
+    counted = pd.Series(range(POINT_LABEL_START, POINT_LABEL_START + len(df)), index=df.index)
+    if not USE_POINT_NUMBER_COLUMN:
+        return counted
+
+    if POINT_NUMBER_COLUMN not in df.columns:
+        log.append(
+            f"NOTE: USE_POINT_NUMBER_COLUMN is on, but '{POINT_NUMBER_COLUMN}' is not a column "
+            f"of '{INPUT_PATH}' — every point is numbered by its row in the file instead, "
+            f"counting from {POINT_LABEL_START}."
+        )
+        return counted
+
+    numbers = pd.to_numeric(df[POINT_NUMBER_COLUMN], errors="coerce")
+    # A whole number is kept as an int so a 7 read back out of the file
+    # is captioned "7" rather than "7.0".
+    resolved = pd.Series(
+        [
+            counted[index]
+            if pd.isna(value)
+            else (int(value) if float(value).is_integer() else value)
+            for index, value in numbers.items()
+        ],
+        index=df.index,
+        dtype=object,
+    )
+
+    fallbacks = int(numbers.isna().sum())
+    if fallbacks:
+        log.append(
+            f"NOTE: {fallbacks} row(s) have a blank or non-numeric '{POINT_NUMBER_COLUMN}' — "
+            f"those points are numbered by their row in the file instead."
+        )
+
+    repeated = sorted({str(value) for value in resolved[resolved.duplicated(keep=False)]})
+    if repeated:
+        log.append(
+            f"NOTE: '{POINT_NUMBER_COLUMN}' is not unique — number(s) {', '.join(repeated)} are "
+            f"shared by more than one row, so more than one point on each plot is captioned "
+            f"with them."
+        )
+    return resolved
+
+
 def build_designations(df: pd.DataFrame, log: list[str]) -> pd.Series:
     """Return one designation string per row ("" where the ID has none)."""
     if SAMPLE_ID_COLUMN not in df.columns:
@@ -725,6 +882,61 @@ def build_designations(df: pd.DataFrame, log: list[str]) -> pd.Series:
             f"{DESIGNATION_UNDERSCORE_COUNT} underscore(s) — no sample is designated"
         )
     return designations
+
+
+def load_highlight_keys(log: list[str]) -> set[str]:
+    """Read HIGHLIGHT_CSV_PATH and return its match values, normalized.
+
+    Keys come back trimmed and lowercased, so matching them against the
+    input file's own column ignores case and stray whitespace. Returns
+    an empty set when HIGHLIGHT_CSV_PATH is None (feature off).
+    """
+    if HIGHLIGHT_CSV_PATH is None:
+        return set()
+
+    highlight_df = pd.read_csv(HIGHLIGHT_CSV_PATH)
+    if HIGHLIGHT_MATCH_COLUMN not in highlight_df.columns:
+        raise ValueError(
+            f"HIGHLIGHT_MATCH_COLUMN '{HIGHLIGHT_MATCH_COLUMN}' not found in the highlight "
+            f"file '{HIGHLIGHT_CSV_PATH}' (its columns are {list(highlight_df.columns)})"
+        )
+
+    keys = {
+        str(value).strip().lower()
+        for value in highlight_df[HIGHLIGHT_MATCH_COLUMN]
+        if not pd.isna(value) and str(value).strip()
+    }
+    if not keys:
+        log.append(
+            f"NOTE: the highlight file '{HIGHLIGHT_CSV_PATH}' has no usable "
+            f"'{HIGHLIGHT_MATCH_COLUMN}' value — no points are circled."
+        )
+    return keys
+
+
+def build_highlight_mask(df: pd.DataFrame, keys: set[str], log: list[str]) -> pd.Series:
+    """Flag every input row whose match value appears in the highlight file.
+
+    Rows flagged here are ringed in every plot they appear in. A key in
+    the highlight file that matches no input row is logged by name —
+    that is usually a typo or a Sample ID that the input file does not
+    (or no longer) carry.
+    """
+    if not keys:
+        return pd.Series(False, index=df.index)
+
+    normalized = df[HIGHLIGHT_MATCH_COLUMN].apply(
+        lambda value: "" if pd.isna(value) else str(value).strip().lower()
+    )
+    mask = normalized.isin(keys)
+
+    unmatched = sorted(keys - set(normalized))
+    if unmatched:
+        log.append(
+            f"NOTE: {len(unmatched)} '{HIGHLIGHT_MATCH_COLUMN}' value(s) in the highlight file "
+            f"match no row of the input file and are not circled: {', '.join(unmatched)}"
+        )
+    return mask
 
 
 def fit_line(
@@ -891,6 +1103,7 @@ def fit_and_plot_variant(
     y_all: pd.Series,
     categories_all: pd.DataFrame,
     designations_all: pd.Series,
+    highlights_all: pd.Series,
     point_numbers_all: pd.Series,
     sample_ids_all: pd.Series,
     color_map: dict[str, str],
@@ -951,6 +1164,7 @@ def fit_and_plot_variant(
     y = y_all[valid]
     categories = categories_all[valid]
     designation_np = designations_all[valid].to_numpy()
+    highlight_np = highlights_all[valid].to_numpy()
     point_np = point_numbers_all[valid].to_numpy()
     sample_id_np = sample_ids_all[valid].to_numpy()
 
@@ -1014,6 +1228,38 @@ def fit_and_plot_variant(
             legend_labels.append(
                 f"{label} ({designation})" if designation and SHOW_DESIGNATION_IN_LEGEND else label
             )
+
+        if highlight_np.any():
+            # One ring per highlighted point, drawn over the markers.
+            # scatter's s is an AREA in points^2, so a ring
+            # HIGHLIGHT_CIRCLE_DIAMETER points across is s = d**2 —
+            # a screen size, identical on every scale variant and
+            # independent of the axes' units.
+            ax.scatter(
+                x_np[highlight_np],
+                y_np[highlight_np],
+                s=HIGHLIGHT_CIRCLE_DIAMETER ** 2,
+                marker="o",
+                facecolors="none",
+                edgecolors=HIGHLIGHT_CIRCLE_COLOR,
+                linewidths=HIGHLIGHT_CIRCLE_LINEWIDTH,
+                zorder=3,
+            )
+            if SHOW_HIGHLIGHT_IN_LEGEND:
+                legend_handles.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        linestyle="none",
+                        color=HIGHLIGHT_CIRCLE_COLOR,
+                        markerfacecolor="none",
+                        markeredgecolor=HIGHLIGHT_CIRCLE_COLOR,
+                        markeredgewidth=HIGHLIGHT_CIRCLE_LINEWIDTH,
+                        markersize=HIGHLIGHT_CIRCLE_DIAMETER,
+                    )
+                )
+                legend_labels.append(HIGHLIGHT_LEGEND_LABEL)
 
         if SHOW_POINT_LABELS:
             # Drawn in one pass over every point, after the series, so a
@@ -1224,6 +1470,27 @@ def validate_config(df: pd.DataFrame) -> None:
             "SAVE_ALL_PLOT_VARIANTS = True is now SAVE_LOG_PLOTS = True."
         )
 
+    if HIGHLIGHT_CSV_PATH is not None:
+        if not Path(HIGHLIGHT_CSV_PATH).is_file():
+            raise ValueError(f"HIGHLIGHT_CSV_PATH is not an existing file: {HIGHLIGHT_CSV_PATH}")
+        if HIGHLIGHT_MATCH_COLUMN not in df.columns:
+            raise ValueError(
+                f"HIGHLIGHT_MATCH_COLUMN '{HIGHLIGHT_MATCH_COLUMN}' not found in the input file "
+                f"'{INPUT_PATH}' — it has to exist in both the input CSV and the highlight CSV"
+            )
+        if not mcolors.is_color_like(HIGHLIGHT_CIRCLE_COLOR):
+            raise ValueError(
+                f"HIGHLIGHT_CIRCLE_COLOR is not a valid color: {HIGHLIGHT_CIRCLE_COLOR!r}"
+            )
+        if HIGHLIGHT_CIRCLE_DIAMETER <= 0:
+            raise ValueError(
+                f"HIGHLIGHT_CIRCLE_DIAMETER must be positive, got {HIGHLIGHT_CIRCLE_DIAMETER}"
+            )
+        if HIGHLIGHT_CIRCLE_LINEWIDTH <= 0:
+            raise ValueError(
+                f"HIGHLIGHT_CIRCLE_LINEWIDTH must be positive, got {HIGHLIGHT_CIRCLE_LINEWIDTH}"
+            )
+
     if OUTLIER_SIGMA <= 0:
         raise ValueError(f"OUTLIER_SIGMA must be positive, got {OUTLIER_SIGMA}")
 
@@ -1267,14 +1534,15 @@ def run() -> None:
 
     categories_all = build_legend_labels(df)
     designations_all = build_designations(df, log)
+    highlights_all = build_highlight_mask(df, load_highlight_keys(log), log)
 
-    # Point numbers are assigned over the file's data rows, once, before
-    # any per-column filtering — so a row keeps the same number in every
-    # plot it appears in. "CSV Line" is where a spreadsheet shows that
-    # row, with the header occupying line 1.
-    point_numbers_all = pd.Series(
-        range(POINT_LABEL_START, POINT_LABEL_START + len(df)), index=df.index
-    )
+    # Point numbers are resolved once, over the file's data rows and
+    # before any per-column filtering — so a row keeps the same number
+    # in every plot it appears in. They are counted from
+    # POINT_LABEL_START, or read from POINT_NUMBER_COLUMN when
+    # USE_POINT_NUMBER_COLUMN is on. "CSV Line" is where a spreadsheet
+    # shows that row, with the header occupying line 1.
+    point_numbers_all = resolve_point_numbers(df, log)
     csv_lines_all = pd.Series(range(2, 2 + len(df)), index=df.index)
     if SAMPLE_ID_COLUMN in df.columns:
         sample_ids_all = df[SAMPLE_ID_COLUMN].fillna("").astype(str)
@@ -1291,6 +1559,14 @@ def run() -> None:
     grouping_mode = resolve_grouping_mode()
 
     excluded_columns = IGNORE_COLUMNS | set(LEGEND_COLUMNS)
+    if POINT_NUMBER_COLUMN in df.columns:
+        # An identifier, not a property — plotting it against the gray
+        # value would just draw the row order.
+        excluded_columns = excluded_columns | {POINT_NUMBER_COLUMN}
+        log.append(
+            f"NOTE: '{POINT_NUMBER_COLUMN}' is a point identifier, not a measured property — "
+            f"it is never plotted as a y-column."
+        )
     candidate_columns = [c for c in df.columns if c != X_COLUMN and c not in excluded_columns]
 
     regression_rows: list[dict] = []
@@ -1332,6 +1608,7 @@ def run() -> None:
                     y_all,
                     categories_all,
                     designations_all,
+                    highlights_all,
                     point_numbers_all,
                     sample_ids_all,
                     color_map,
@@ -1399,6 +1676,8 @@ def run() -> None:
     for legend_column in LEGEND_COLUMNS:
         point_key[legend_column] = categories_all[legend_column]
     point_key["Designation"] = designations_all
+    if HIGHLIGHT_CSV_PATH is not None:
+        point_key["Circled"] = highlights_all
     point_key[X_COLUMN] = x_all
     for column, values in plotted_y_columns.items():
         point_key[column] = values
@@ -1467,7 +1746,15 @@ def run() -> None:
     print(f"  Standalone plot PNGs saved: {plots_written}")
     print(f"  Grid images generated: {grid_images_written}")
     print(f"  Columns covered: {sorted({r['Column'] for r in regression_rows})}")
-    print(f"  Points numbered: {len(point_key)} (point {POINT_LABEL_START} = first data row)")
+    if HIGHLIGHT_CSV_PATH is not None:
+        print(
+            f"  Points circled: {int(highlights_all.sum())} row(s) matched by "
+            f"'{HIGHLIGHT_MATCH_COLUMN}' from '{HIGHLIGHT_CSV_PATH}'"
+        )
+    if USE_POINT_NUMBER_COLUMN and POINT_NUMBER_COLUMN in df.columns:
+        print(f"  Points numbered: {len(point_key)} (from the '{POINT_NUMBER_COLUMN}' column)")
+    else:
+        print(f"  Points numbered: {len(point_key)} (point {POINT_LABEL_START} = first data row)")
     print(f"  Point key file: {point_key_path}")
     if residual_path is not None:
         print(
