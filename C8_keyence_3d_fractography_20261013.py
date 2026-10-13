@@ -15,6 +15,14 @@ Reads every height-map CSV (and TIFF) in a folder and:
   3. Writes an analysis page per sample: 2D height map, height
      histogram, Abbott-Firestone (bearing area) curve, and Ra per row.
 
+Keyence VHX-7000 series (e.g. VHX-7100) notes
+  The 3D height map is stored inside the microscope's JPEG/TIFF image
+  and is exported to CSV from the VHX software ("Save CSV" on the 3D
+  data). Published user notes say the CSV holds heights in microns and
+  carries NO X/Y information, so the pixel pitch (which depends on the
+  lens and magnification) must be entered below as XY_PITCH. Unmeasured
+  pixels are written as -1.000 in your files.
+
 Input files
   CSV   a grid of heights, one row per scan line; blank cells = no
         measurement. Leading header lines are skipped automatically.
@@ -84,12 +92,17 @@ OUTPUT_DIR = None
 # heights are already in the unit you want (e.g. mm or um), and set
 # Z_LABEL to that unit. Example: pitch 0.7 um, heights already in um ->
 # XY_PITCH = 0.7, Z_UNIT = 1.0, both labels "um".
+# VHX-7000 series: CSV heights are reported to be in microns, hence the
+# "um" Z default below; confirm against a known step height. The XY
+# pitch depends on lens + magnification: take it from the scale/
+# calibration shown in the VHX software for that image (or measure a
+# known distance on screen and divide by its pixel count).
 # With XY_PITCH left at 1.0 the XY axes are in pixels.
 XY_PITCH = 1.0          # size of one pixel in XY_LABEL units
 Z_UNIT = 1.0            # size of one raw height unit in Z_LABEL units
 Z_UNIT_TIFF = 1.0       # same, for height-map TIFFs (often differs)
 XY_LABEL = "px"         # e.g. "um"
-Z_LABEL = "units"       # unit of the CSV heights, e.g. "um" or "mm"
+Z_LABEL = "um"          # unit of the CSV heights (VHX exports microns)
 
 # Per-file overrides, keyed by file name without extension. Any of:
 #   xy_pitch, z_unit, roi=(x0, x1, y0, y1) in pixels of the raw grid
