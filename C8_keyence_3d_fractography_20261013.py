@@ -78,16 +78,18 @@ INPUT_DIR = Path('/path/to/keyence_folder')
 OUTPUT_DIR = None
 
 # ---- Calibration -----------------------------------------------------
-# The CSV holds raw height units and no pixel size, so enter the
-# calibration here. Example: pixel pitch 0.7 um and 1 raw height unit =
-# 0.001 um -> XY_PITCH = 0.7, Z_UNIT = 0.001, labels "um".
-# Leave at 1.0 to work in pixels / raw units (labels below then
-# describe that, and 3D aspect will look very flat).
+# The CSV carries no pixel size, so enter the XY calibration from your
+# Keyence scan settings (the XY pitch in the scan info / TIFF). Z_UNIT
+# scales the CSV numbers into Z_LABEL units: leave it at 1.0 if the CSV
+# heights are already in the unit you want (e.g. mm or um), and set
+# Z_LABEL to that unit. Example: pitch 0.7 um, heights already in um ->
+# XY_PITCH = 0.7, Z_UNIT = 1.0, both labels "um".
+# With XY_PITCH left at 1.0 the XY axes are in pixels.
 XY_PITCH = 1.0          # size of one pixel in XY_LABEL units
 Z_UNIT = 1.0            # size of one raw height unit in Z_LABEL units
 Z_UNIT_TIFF = 1.0       # same, for height-map TIFFs (often differs)
 XY_LABEL = "px"         # e.g. "um"
-Z_LABEL = "raw"         # e.g. "um"
+Z_LABEL = "units"       # unit of the CSV heights, e.g. "um" or "mm"
 
 # Per-file overrides, keyed by file name without extension. Any of:
 #   xy_pitch, z_unit, roi=(x0, x1, y0, y1) in pixels of the raw grid
@@ -99,8 +101,10 @@ FILE_OVERRIDES = {}
 DEFAULT_ROI = None
 
 # Values in the CSV/TIFF that mean "no measurement" (become NaN).
-# -2147483648 is the usual Keyence/int32 invalid marker.
-INVALID_VALUES = [-2147483648, 2147483647]
+# Keyence CSV exports mark unmeasured pixels with -1.000; the int32
+# limits are the marker in some other exports. If your real surface can
+# legitimately contain exactly -1.0, remove it from this list.
+INVALID_VALUES = [-1.0, -2147483648, 2147483647]
 # Treat exactly-zero pixels in height TIFFs as invalid?
 TIFF_ZERO_IS_INVALID = False
 
