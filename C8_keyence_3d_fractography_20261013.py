@@ -3,16 +3,17 @@ Keyence 3D scan viewer + fractography roughness script.
 
 Reads every height-map CSV (and TIFF) in a folder and:
 
-  1. Draws interactive 3D surfaces — all samples side by side in one
-     page, plus one full-size page per sample. Rotate (left-drag), pan
-     (right-drag, or the Pan tool in the toolbar), zoom (scroll wheel).
-     Buttons switch between isometric / top / front / side views, change
-     the vertical exaggeration, and (when a colour TIFF with a matching
-     name exists) swap the height colouring for the optical texture.
-     With LINK_CAMERAS on, rotating one surface rotates all of them.
+  1. Draws interactive 3D surfaces (matplotlib) — all samples side by
+     side in one window, plus one window per sample. Rotate with a
+     left-drag, zoom with a right-drag, and use the toolbar's Pan / Zoom
+     tools. Buttons switch between isometric / top / front / side
+     views, a slider sets the vertical exaggeration, and (when a colour
+     TIFF with a matching name exists) a button swaps the height
+     colouring for the optical texture. With LINK_CAMERAS on, rotating
+     one surface rotates all of them.
   2. Calculates surface roughness at FULL resolution (the 3D preview is
      downsampled, the numbers are not) and writes a summary CSV.
-  3. Writes an analysis page per sample: 2D height map, height
+  3. Shows an analysis window per sample: 2D height map, height
      histogram, Abbott-Firestone (bearing area) curve, and Ra per row.
 
 Keyence VHX-7000 series (e.g. VHX-7100) notes
@@ -33,6 +34,13 @@ Input files
         are treated as optical texture and paired to the CSV whose name
         matches (e.g. VF6_2_3_3D.csv <-> VF6_2_3_3D.tif or VF6_2_3.tif).
 
+Where the key values occur (SHOW_EXTREMA, SHOW_MEAN_REFERENCE,
+MARK_ROUGH_LINES): diamonds at the highest / lowest points on the 3D
+surfaces and height map, a mean-height plane in 3D and a mean-height
+contour on the map, and the roughest / smoothest scan lines on the Ra
+plot. The summary CSV also lists the highest, lowest and average height
+of the file and the pixel (col, row) where the extremes sit.
+
 Roughness reported (all after levelling, in Z_LABEL units)
   Areal (ISO 25178)  Sa, Sq, Sp, Sv, Sz (= max height - min height),
                      Ssk, Sku, Sz 1-99% (outlier-robust range),
@@ -47,10 +55,12 @@ Roughness reported (all after levelling, in Z_LABEL units)
   region of interest.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
-Dependencies: numpy, pandas, pillow, plotly   (optional: scipy)
-    pip install plotly pillow            (or: conda install plotly)
-Plotly pages open in your web browser (Spyder's Plots pane can't show
-interactive 3D), so no Qt/matplotlib backend setup is needed.
+Dependencies: numpy, pandas, pillow, matplotlib   (optional: scipy)
+All of these ship with Spyder, so nothing needs installing.
+In Spyder the script switches the console to the Qt graphics backend so
+the figures open in their own rotatable windows (the inline Plots pane
+can't rotate 3D). If that fails: Preferences > IPython console >
+Graphics > Backend: Qt, restart the kernel, and run again.
 
 This script is standalone — it does not import or depend on any other
 script in this repository.
@@ -62,7 +72,6 @@ import math
 import re
 import sys
 import warnings
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -70,8 +79,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Button, Slider
 
 Image.MAX_IMAGE_PIXELS = None  # Keyence TIFFs can be very large
 
@@ -86,27 +96,29 @@ INPUT_DIR = Path('/path/to/keyence_folder')
 OUTPUT_DIR = None
 
 # ---- Calibration -----------------------------------------------------
-# The CSV carries no pixel size, so enter the XY calibration from your
-# Keyence scan settings (the XY pitch in the scan info / TIFF). Z_UNIT
-# scales the CSV numbers into Z_LABEL units: leave it at 1.0 if the CSV
-# heights are already in the unit you want (e.g. mm or um), and set
-# Z_LABEL to that unit. Example: pitch 0.7 um, heights already in um ->
-# XY_PITCH = 0.7, Z_UNIT = 1.0, both labels "um".
-# VHX-7000 series: CSV heights are reported to be in microns, hence the
-# "um" Z default below; confirm against a known step height. The XY
-# pitch depends on lens + magnification: take it from the scale/
-# calibration shown in the VHX software for that image (or measure a
-# known distance on screen and divide by its pixel count).
-# With XY_PITCH left at 1.0 the XY axes are in pixels.
-XY_PITCH = 1.0          # size of one pixel in XY_LABEL units
-Z_UNIT = 1.0            # size of one raw height unit in Z_LABEL units
-Z_UNIT_TIFF = 1.0       # same, for height-map TIFFs (often differs)
+# The CSV carries no pixel size, so the user enters the calibration here.
+#   X_STEP  size of one pixel along X, in XY_LABEL units
+#   Y_STEP  size of one pixel along Y (defaults to X_STEP = square
+#           pixels; set it separately if your pixels are not square)
+#   Z_STEP  multiplier that turns the numbers in the file into Z_LABEL
+#           units (1.0 = the file heights are already in Z_LABEL)
+# All three are 1.0 for now, so XY is in pixels and Z is as in the file.
+# VHX-7000 series: CSV heights are reported to be in microns (hence the
+# "um" Z default below; confirm against a known step height). The XY
+# step depends on lens + magnification: take it from the scale shown in
+# the VHX software for that image (or measure a known distance on
+# screen and divide by its pixel count).
+X_STEP = 1.0
+Y_STEP = X_STEP         # change only if pixels are not square
+Z_STEP = 1.0
+Z_STEP_TIFF = Z_STEP    # same, for height-map TIFFs (often differs)
 XY_LABEL = "px"         # e.g. "um"
-Z_LABEL = "um"          # unit of the CSV heights (VHX exports microns)
+Z_LABEL = "um"          # unit of the heights after Z_STEP
 
 # Per-file overrides, keyed by file name without extension. Any of:
-#   xy_pitch, z_unit, roi=(x0, x1, y0, y1) in pixels of the raw grid
-# FILE_OVERRIDES = {"VF6_2_3_3D": {"xy_pitch": 0.7, "z_unit": 0.001,
+#   x_step, y_step, z_step, roi=(x0, x1, y0, y1) in pixels of the raw grid
+# FILE_OVERRIDES = {"VF6_2_3_3D": {"x_step": 0.7, "y_step": 0.7,
+#                                  "z_step": 1.0,
 #                                  "roi": (1500, 4000, 2000, 9000)}}
 FILE_OVERRIDES = {}
 
@@ -140,21 +152,38 @@ PROFILE_SEGMENTS = 5    # Rz = mean peak-to-valley over this many segments
 # Scan lines with fewer valid points than this fraction are ignored.
 MIN_LINE_FILL = 0.5
 
+# ---- Marking where the key values occur --------------------------------
+# Highest / lowest points: a red / cyan diamond on the 3D surfaces and
+# on the analysis height map, labelled with the value.
+SHOW_EXTREMA = True
+# Which highest/lowest to mark: "levelled" (after plane removal, the
+# surface you are looking at, matches Sp / Sv) or "file" (the raw
+# numbers in the file, before any levelling).
+MARK_EXTREMA_OF = "levelled"
+# Average: a translucent plane at the mean height in 3D, and a white
+# contour on the height map where the surface crosses the mean height.
+SHOW_MEAN_REFERENCE = True
+# Roughness is spread over the whole surface, so it is marked per scan
+# line: the Ra-per-line plot shows the mean Ra and flags the roughest and
+# smoothest lines, and the height map draws a line at the roughest one.
+MARK_ROUGH_LINES = True
+
 # ---- 3D display ------------------------------------------------------
-# The browser can't draw 60 million points, so the preview is block-
-# averaged to at most this many points along the longer side. Roughness
-# is NOT affected.
-MAX_DISPLAY_POINTS = 400
-COLUMNS = 2             # surfaces per row in the side-by-side page
-COLORSCALE = "Viridis"
+# matplotlib redraws every polygon while you rotate, so the preview is
+# block-averaged to at most this many points along the longer side
+# (roughness is NOT affected). 200 stays smooth; raise it for more
+# detail if rotating still feels fast enough.
+MAX_DISPLAY_POINTS = 200
+COLUMNS = 2             # surfaces per row in the side-by-side window
+COLORMAP = "viridis"
 COMMON_COLOR_SCALE = True   # same colour range on every surface
-Z_EXAGGERATION = 1.0    # initial vertical exaggeration (buttons change it)
+Z_EXAGGERATION = 1.0    # initial vertical exaggeration (slider changes it)
 LINK_CAMERAS = True     # rotating one surface rotates all (side-by-side)
 USE_TEXTURE = True      # build optical-texture view when a colour TIFF pairs up
-PLOTLY_JS = True        # True = embed plotly.js (works offline, +4 MB/file)
-                        # "cdn" = smaller files, needs internet
-OPEN_IN_BROWSER = True  # open side-by-side + analysis pages when done
-OPEN_INDIVIDUAL = False # also open every per-sample page
+SHOW_SIDE_BY_SIDE = True    # one window with every sample
+SHOW_INDIVIDUAL = True      # one 3D window per sample
+SHOW_ANALYSIS = True        # one analysis window per sample
+SAVE_PNG = True             # also save the windows as PNG files
 
 # =====================================================================
 # End of CONFIG
@@ -475,13 +504,37 @@ def crop_roi(arr, roi):
     return arr[y0:y1, x0:x1]
 
 
+def extrema(z: np.ndarray):
+    """(max, (row, col), min, (row, col), mean) of the finite values."""
+    hi, hi_at, lo, lo_at = -np.inf, None, np.inf, None
+    total, count = 0.0, 0
+    for r0 in range(0, z.shape[0], CHUNK_ROWS):
+        blk = z[r0:r0 + CHUNK_ROWS]
+        m = np.isfinite(blk)
+        if not m.any():
+            continue
+        total += float(blk[m].sum(dtype=np.float64))
+        count += int(m.sum())
+        i = int(np.argmax(np.where(m, blk, -np.inf)))
+        r, c = divmod(i, blk.shape[1])
+        if blk[r, c] > hi:
+            hi, hi_at = float(blk[r, c]), (r0 + r, c)
+        i = int(np.argmin(np.where(m, blk, np.inf)))
+        r, c = divmod(i, blk.shape[1])
+        if blk[r, c] < lo:
+            lo, lo_at = float(blk[r, c]), (r0 + r, c)
+    return hi, hi_at, lo, lo_at, total / count
+
+
 def process(entry: dict) -> dict:
     name = entry["name"]
     ov = FILE_OVERRIDES.get(name, {})
     is_tiff = entry["kind"] == "tiff"
-    pitch = float(ov.get("xy_pitch", XY_PITCH))
-    zunit = float(ov.get("z_unit", Z_UNIT_TIFF if is_tiff else Z_UNIT))
+    dx = float(ov.get("x_step", X_STEP))
+    dy = float(ov.get("y_step", Y_STEP if "x_step" not in ov else dx))
+    zstep = float(ov.get("z_step", Z_STEP_TIFF if is_tiff else Z_STEP))
     roi = ov.get("roi", DEFAULT_ROI)
+    off_x, off_y = (roi[0], roi[2]) if roi else (0, 0)
 
     z = entry.get("data") if is_tiff else read_height_csv(entry["path"])
     if z is None:
@@ -489,28 +542,43 @@ def process(entry: dict) -> dict:
     apply_invalid(z, is_tiff)
     full_shape = z.shape
     z = np.ascontiguousarray(crop_roi(z, roi), dtype=np.float32)
-    z *= np.float32(zunit)
+    z *= np.float32(zstep)
     if z.size == 0 or not np.isfinite(z).any():
         print(f"  skip  {name}: no valid data (check ROI / INVALID_VALUES)")
         return None
     valid_pct = 100.0 * float(np.isfinite(z).mean())
+    # Highest / lowest / average of the heights as they are in the file.
+    f_hi, f_hi_at, f_lo, f_lo_at, f_mean = extrema(z)
     if GAUSS_SIGMA_PX > 0:
         z = gaussian_smooth(z, GAUSS_SIGMA_PX)
     level_surface(z, LEVEL_ORDER)
+    l_hi, l_hi_at, l_lo, l_lo_at, _ = extrema(z)
 
     H, W = z.shape
-    stats, plot, nvalid = areal_parameters(z, pitch, pitch)
-    sums = {"File": name, "Rows": H, "Cols": W, "Valid (%)": round(valid_pct, 2)}
+    stats, plot, nvalid = areal_parameters(z, dx, dy)
+    sums = {"File": name, "Rows": H, "Cols": W, "Valid (%)": round(valid_pct, 2),
+            "Highest height": f_hi, "Lowest height": f_lo, "Average height": f_mean,
+            "Highest at col": f_hi_at[1] + off_x, "Highest at row": f_hi_at[0] + off_y,
+            "Lowest at col": f_lo_at[1] + off_x, "Lowest at row": f_lo_at[0] + off_y,
+            "Peak (levelled) at col": l_hi_at[1] + off_x, "Peak (levelled) at row": l_hi_at[0] + off_y,
+            "Pit (levelled) at col": l_lo_at[1] + off_x, "Pit (levelled) at row": l_lo_at[0] + off_y}
     sums.update(stats)
-    px, ra_rows = profile_parameters(z, pitch, PROFILE_SEGMENTS, PROFILE_LINE, MIN_LINE_FILL)
-    py, _ = profile_parameters(z.T, pitch, PROFILE_SEGMENTS, PROFILE_LINE, MIN_LINE_FILL)
+    px, ra_rows = profile_parameters(z, dx, PROFILE_SEGMENTS, PROFILE_LINE, MIN_LINE_FILL)
+    py, _ = profile_parameters(z.T, dy, PROFILE_SEGMENTS, PROFILE_LINE, MIN_LINE_FILL)
     sums.update({f"{k} X": v for k, v in px.items()})
     sums.update({f"{k} Y": v for k, v in py.items()})
 
     # Display grid
     f = max(1, math.ceil(max(H, W) / MAX_DISPLAY_POINTS))
     zd = block_mean(z, f)
-    zd -= np.float32(np.nanmin(zd))
+    shift = float(np.nanmin(zd))
+    zd -= np.float32(shift)
+    Hc = zd.shape[0] * f
+
+    def y_of_row(r):
+        r = min(r, Hc - 1)
+        return (Hc - 1 - r) * dy if ROW0_AT == "top" else r * dy
+
     tex = None
     if USE_TEXTURE and entry.get("texture") is not None:
         img = entry["texture"]
@@ -526,184 +594,256 @@ def process(entry: dict) -> dict:
         zd = zd[::-1]
         if tex is not None:
             tex = tex[::-1]
-    xs = (np.arange(zd.shape[1]) * f + (f - 1) / 2.0) * pitch
-    ys = (np.arange(zd.shape[0]) * f + (f - 1) / 2.0) * pitch
-    plot["ra_rows"] = (np.arange(H) * pitch, ra_rows)
-    # Heatmap for the analysis page uses the same downsampled grid.
-    return {"name": name, "summary": sums, "plot": plot,
+    xs = (np.arange(zd.shape[1]) * f + (f - 1) / 2.0) * dx
+    ys = (np.arange(zd.shape[0]) * f + (f - 1) / 2.0) * dy
+
+    # Where the key values occur, in plot coordinates. Heights of the
+    # markers come from the full-resolution surface (the preview is
+    # block-averaged, so a sharp peak can sit slightly above it).
+    if MARK_EXTREMA_OF == "file":
+        hi_at, lo_at, hi_val, lo_val = f_hi_at, f_lo_at, f_hi, f_lo
+    else:
+        hi_at, lo_at, hi_val, lo_val = l_hi_at, l_lo_at, l_hi, l_lo
+
+    def mark(at, value):
+        r, c = at
+        return {"x": c * dx, "y": y_of_row(r), "z": float(z[r, c]) - shift, "value": value}
+
+    marks = {"peak": mark(hi_at, hi_val), "pit": mark(lo_at, lo_val), "mean_level": -shift}
+    if np.isfinite(ra_rows).any():
+        r_hi, r_lo = int(np.nanargmax(ra_rows)), int(np.nanargmin(ra_rows))
+        marks.update({"ra_hi_row": r_hi, "ra_lo_row": r_lo,
+                      "ra_hi": float(ra_rows[r_hi]), "ra_lo": float(ra_rows[r_lo]),
+                      "ra_mean": px["Ra"]})
+    plot["ra_rows"] = (np.array([y_of_row(r) for r in range(H)]), ra_rows)
+    return {"name": name, "summary": sums, "plot": plot, "marks": marks,
             "zd": zd, "xs": xs, "ys": ys, "tex": tex,
-            "tex_name": entry.get("texture_name"), "pitch": pitch}
+            "tex_name": entry.get("texture_name")}
 
 
 # ---------------------------------------------------------------------
-# Plotting
+# Plotting (matplotlib)
 # ---------------------------------------------------------------------
-LINK_JS = """
-var gd = document.getElementById('{plot_id}');
-var lastCam = '';
-gd.on('plotly_relayout', function(ed) {
-  var src = null, cam = null;
-  Object.keys(ed).forEach(function(k) {
-    if (/^scene\\d*\\.camera$/.test(k)) { src = k.split('.')[0]; cam = ed[k]; }
-  });
-  if (!src || !cam) return;
-  var s = JSON.stringify(cam);
-  if (s === lastCam) return;
-  lastCam = s;
-  var upd = {};
-  Object.keys(gd._fullLayout).forEach(function(k) {
-    if (/^scene\\d*$/.test(k) && k !== src) upd[k + '.camera'] = cam;
-  });
-  Plotly.relayout(gd, upd);
-});
-"""
-
-VIEWS = {
-    "Isometric": dict(eye=dict(x=1.35, y=-1.55, z=0.95), up=dict(x=0, y=0, z=1)),
-    "Top": dict(eye=dict(x=0.0, y=0.0, z=2.4), up=dict(x=0, y=1, z=0)),
-    "Front": dict(eye=dict(x=0.0, y=-2.4, z=0.05), up=dict(x=0, y=0, z=1)),
-    "Side": dict(eye=dict(x=2.4, y=0.0, z=0.05), up=dict(x=0, y=0, z=1)),
+VIEWS = {            # (elevation, azimuth) in degrees
+    "Isometric": (25, -60),
+    "Top": (90, -90),
+    "Front": (0, -90),
+    "Side": (0, 0),
 }
-EXAG_STEPS = [1, 2, 5, 10, 20, 50]
+RED, CYAN = "#E4002B", "#00C8FF"
 
 
-def grid_mesh(zd, xs, ys, tex):
+def setup_backend() -> bool:
+    """Switch to an interactive backend. Returns True when running inside
+    IPython/Spyder (figures then stay open after the script ends)."""
+    try:
+        ip = get_ipython()  # noqa: F821  (defined inside IPython/Spyder)
+    except NameError:
+        ip = None
+    if ip is not None:
+        try:
+            ip.run_line_magic("matplotlib", "qt")   # separate, rotatable windows
+        except Exception as exc:
+            print(f"  warn  could not switch Spyder to the Qt backend: {exc}\n"
+                  "        In Spyder: Preferences > IPython console > Graphics > "
+                  "Backend: Qt, then restart the kernel.")
+        return True
+    if matplotlib.get_backend().lower() == "agg":
+        for name in ("QtAgg", "MacOSX", "TkAgg"):
+            try:
+                plt.switch_backend(name)
+                break
+            except Exception:
+                continue
+    return False
+
+
+def apply_aspect(ax, it, exag: float):
+    lx = float(it["xs"][-1] - it["xs"][0]) or 1.0
+    ly = float(it["ys"][-1] - it["ys"][0]) or 1.0
+    lz = float(np.nanmax(it["zd"])) or 1.0
+    ax.set_box_aspect((lx, ly, lz * exag))
+
+
+def draw_surface_axes(ax, it, vmin, vmax):
+    """Draw one sample on a 3D axes; returns (height_surface, texture_surface)."""
+    zd = it["zd"]
+    X, Y = np.meshgrid(it["xs"], it["ys"])
     h, w = zd.shape
-    X, Y = np.meshgrid(xs, ys)
-    idx = np.arange(h * w).reshape(h, w)
-    ok = np.isfinite(zd)
-    quad = ok[:-1, :-1] & ok[:-1, 1:] & ok[1:, :-1] & ok[1:, 1:]
-    a, b, c, d = idx[:-1, :-1][quad], idx[:-1, 1:][quad], idx[1:, :-1][quad], idx[1:, 1:][quad]
-    i = np.concatenate([a, b])
-    j = np.concatenate([b, d])
-    k = np.concatenate([c, c])
-    return dict(x=X.ravel(), y=Y.ravel(), z=np.nan_to_num(zd.ravel()),
-                i=i, j=j, k=k, vertexcolor=tex.reshape(-1, 3))
+    kw = dict(rcount=h, ccount=w, linewidth=0, antialiased=False, shade=False)
+    surf = ax.plot_surface(X, Y, zd, cmap=COLORMAP, vmin=vmin, vmax=vmax, **kw)
+    tex_surf = None
+    if it["tex"] is not None:
+        tex_surf = ax.plot_surface(X, Y, np.nan_to_num(zd), facecolors=it["tex"] / 255.0, **kw)
+        tex_surf.set_visible(False)
+    mk = it["marks"]
+    if SHOW_MEAN_REFERENCE:
+        lvl = mk["mean_level"]
+        ax.plot_surface(np.array([[it["xs"][0], it["xs"][-1]]] * 2),
+                        np.array([[it["ys"][0]] * 2, [it["ys"][-1]] * 2]),
+                        np.full((2, 2), lvl), color="grey", alpha=0.25, linewidth=0,
+                        shade=False)
+    if SHOW_EXTREMA:
+        for key, label, colour in (("peak", "Highest", RED), ("pit", "Lowest", CYAN)):
+            q = mk[key]
+            ax.scatter([q["x"]], [q["y"]], [q["z"]], marker="D", s=70, c=colour,
+                       edgecolors="white", depthshade=False, zorder=10)
+            ax.text(q["x"], q["y"], q["z"], f"  {label} {q['value']:.4g}", fontsize=8,
+                    zorder=11)
+    ax.set_xlabel(f"X ({XY_LABEL})")
+    ax.set_ylabel(f"Y ({XY_LABEL})")
+    ax.set_zlabel(f"Height ({Z_LABEL})")
+    ax.set_title(it["name"], fontsize=10)
+    return surf, tex_surf
 
 
 def build_3d_figure(items, title: str, link: bool):
     n = len(items)
     ncols = min(n, COLUMNS)
     nrows = math.ceil(n / ncols)
-    fig = make_subplots(
-        rows=nrows, cols=ncols,
-        specs=[[{"type": "scene"}] * ncols for _ in range(nrows)],
-        subplot_titles=[it["name"] for it in items],
-        horizontal_spacing=0.01, vertical_spacing=0.08 / nrows * 2)
-    scenes = ["scene"] + [f"scene{i}" for i in range(2, n + 1)]
-
+    fig = plt.figure(figsize=(6.2 * ncols, 5.4 * nrows + 0.8))
+    if n > 1:
+        fig.suptitle(title, fontsize=12)
+    fig.subplots_adjust(left=0.02, right=0.88, top=0.92, bottom=0.14, wspace=0.05, hspace=0.12)
     if COMMON_COLOR_SCALE:
-        cmin = min(float(np.nanmin(it["zd"])) for it in items)
-        cmax = max(float(np.nanmax(it["zd"])) for it in items)
-    surf_idx, mesh_idx, ratios = [], [], []
-    for n_i, it in enumerate(items):
-        r, c = divmod(n_i, ncols)
-        zd = it["zd"]
-        lo, hi = (cmin, cmax) if COMMON_COLOR_SCALE else (float(np.nanmin(zd)), float(np.nanmax(zd)))
-        fig.add_trace(go.Surface(
-            x=it["xs"], y=it["ys"], z=np.round(zd, 3), colorscale=COLORSCALE,
-            cmin=lo, cmax=hi, showscale=(not COMMON_COLOR_SCALE) or n_i == 0,
-            colorbar=dict(title=f"Height ({Z_LABEL})", len=0.5, thickness=12),
-            lighting=dict(ambient=0.55, diffuse=0.8, specular=0.25, roughness=0.5),
-            lightposition=dict(x=2000, y=-3000, z=4000),
-            hovertemplate=f"x %{{x:.1f}} {XY_LABEL}<br>y %{{y:.1f}} {XY_LABEL}"
-                          f"<br>z %{{z:.3f}} {Z_LABEL}<extra>{it['name']}</extra>"),
-            row=r + 1, col=c + 1)
-        surf_idx.append(len(fig.data) - 1)
-        if it["tex"] is not None:
-            m = grid_mesh(zd, it["xs"], it["ys"], it["tex"])
-            fig.add_trace(go.Mesh3d(**m, flatshading=False, visible=False, name="texture",
-                                    lighting=dict(ambient=0.9, diffuse=0.3, specular=0.05),
-                                    hoverinfo="skip"), row=r + 1, col=c + 1)
-            mesh_idx.append(len(fig.data) - 1)
-        else:
-            mesh_idx.append(None)
-        lx = float(it["xs"][-1] - it["xs"][0]) or 1.0
-        ly = float(it["ys"][-1] - it["ys"][0]) or 1.0
-        lz = float(np.nanmax(zd)) or 1.0
-        lmax = max(lx, ly)
-        ratios.append((lx / lmax, ly / lmax, lz / lmax))
+        gmin = min(float(np.nanmin(it["zd"])) for it in items)
+        gmax = max(float(np.nanmax(it["zd"])) for it in items)
+    axes, surfs, texs = [], [], []
+    for k, it in enumerate(items):
+        ax = fig.add_subplot(nrows, ncols, k + 1, projection="3d")
+        lo, hi = (gmin, gmax) if COMMON_COLOR_SCALE else (float(np.nanmin(it["zd"])), float(np.nanmax(it["zd"])))
+        s, t = draw_surface_axes(ax, it, lo, hi)
+        apply_aspect(ax, it, Z_EXAGGERATION)
+        ax.view_init(*VIEWS["Isometric"])
+        axes.append(ax)
+        surfs.append(s)
+        texs.append(t)
+        if not COMMON_COLOR_SCALE:
+            fig.colorbar(s, ax=ax, shrink=0.5, pad=0.10, label=f"Height ({Z_LABEL})")
+    if COMMON_COLOR_SCALE:
+        fig.colorbar(surfs[0], ax=axes, shrink=0.5, pad=0.10, label=f"Height ({Z_LABEL})")
 
-    for sc, (rx, ry, rz) in zip(scenes, ratios):
-        fig.layout[sc].update(
-            xaxis_title=f"X ({XY_LABEL})", yaxis_title=f"Y ({XY_LABEL})",
-            zaxis_title=f"Height ({Z_LABEL})", aspectmode="manual",
-            aspectratio=dict(x=rx, y=ry, z=rz * Z_EXAGGERATION),
-            camera=VIEWS["Isometric"], dragmode="turntable")
+    widgets = []
+    state = {"exag": Z_EXAGGERATION}
 
-    view_buttons = [dict(label=k, method="relayout",
-                         args=[{f"{sc}.camera": v for sc in scenes}]) for k, v in VIEWS.items()]
-    exag_buttons = [dict(label=f"{e}x", method="relayout",
-                         args=[{f"{sc}.aspectratio": dict(x=rx, y=ry, z=rz * e)
-                                for sc, (rx, ry, rz) in zip(scenes, ratios)}])
-                    for e in EXAG_STEPS]
-    menus = [
-        dict(type="buttons", direction="right", buttons=view_buttons, x=0.0, y=1.13,
-             xanchor="left", showactive=False),
-        dict(type="buttons", direction="right", buttons=exag_buttons, x=0.42, y=1.13,
-             xanchor="left", showactive=False),
-    ]
-    if any(i is not None for i in mesh_idx):
-        n_tr = len(fig.data)
-        vis_h = [True if t in surf_idx else False for t in range(n_tr)]
-        vis_t = list(vis_h)
-        for s, m in zip(surf_idx, mesh_idx):
-            if m is not None:
-                vis_t[s], vis_t[m] = False, True
-        menus.append(dict(type="buttons", direction="right", x=0.9, y=1.13, xanchor="left",
-                          showactive=False,
-                          buttons=[dict(label="Height", method="restyle", args=[{"visible": vis_h}]),
-                                   dict(label="Texture", method="restyle", args=[{"visible": vis_t}])]))
-    fig.update_layout(
-        title=dict(text=title, x=0.01), updatemenus=menus,
-        height=max(620, 640 * nrows), margin=dict(l=0, r=0, t=110, b=0),
-        paper_bgcolor="white")
-    fig.add_annotation(
-        text="View / vertical exaggeration" + (" / colour" if len(menus) > 2 else "")
-        + " — left-drag rotate, right-drag pan, scroll zoom",
-        x=0.0, y=1.19, xref="paper", yref="paper", showarrow=False, xanchor="left",
-        font=dict(size=11, color="#555"))
-    post = LINK_JS if (link and n > 1) else None
-    return fig, post
+    def set_view(elev, azim):
+        for a in axes:
+            a.view_init(elev, azim)
+        fig.canvas.draw_idle()
+
+    for i, (name, (el, az)) in enumerate(VIEWS.items()):
+        bax = fig.add_axes([0.02 + i * 0.105, 0.015, 0.10, 0.04])
+        b = Button(bax, name)
+        b.on_clicked(lambda _e, el=el, az=az: set_view(el, az))
+        widgets.append(b)
+    sax = fig.add_axes([0.52, 0.025, 0.20, 0.025])
+    slider = Slider(sax, "Z exag.", 0.5, 50, valinit=Z_EXAGGERATION, valstep=0.5)
+
+    def on_exag(v):
+        state["exag"] = v
+        for a, it in zip(axes, items):
+            apply_aspect(a, it, v)
+        fig.canvas.draw_idle()
+    slider.on_changed(on_exag)
+    widgets.append(slider)
+    if any(t is not None for t in texs):
+        tax = fig.add_axes([0.80, 0.015, 0.17, 0.04])
+        tb = Button(tax, "Texture / Height")
+        mode = {"texture": False}
+
+        def toggle(_e):
+            mode["texture"] = not mode["texture"]
+            for s, t in zip(surfs, texs):
+                if t is not None:
+                    s.set_visible(not mode["texture"])
+                    t.set_visible(mode["texture"])
+            fig.canvas.draw_idle()
+        tb.on_clicked(toggle)
+        widgets.append(tb)
+
+    if link and n > 1:
+        def sync(event):
+            if event.inaxes in axes and event.button == 1:
+                src = event.inaxes
+                for a in axes:
+                    if a is not src:
+                        a.view_init(src.elev, src.azim, getattr(src, "roll", 0))
+                fig.canvas.draw_idle()
+        fig.canvas.mpl_connect("motion_notify_event", sync)
+    fig._keyence_widgets = widgets      # keep widgets alive
+    return fig
 
 
 def build_analysis_figure(it):
-    p = it["plot"]
-    fig = make_subplots(rows=2, cols=2, subplot_titles=(
-        "Height map (levelled, preview resolution)", "Height distribution",
-        "Abbott-Firestone curve", "Ra per scan line (along X)"))
-    fig.add_trace(go.Heatmap(x=it["xs"], y=it["ys"], z=it["zd"], colorscale=COLORSCALE,
-                             colorbar=dict(title=Z_LABEL, len=0.4, y=0.8, thickness=10)), 1, 1)
-    fig.update_yaxes(scaleanchor="x", scaleratio=1, row=1, col=1)
-    counts, edges = p["hist"]
-    fig.add_trace(go.Bar(x=0.5 * (edges[:-1] + edges[1:]), y=counts, showlegend=False,
-                         marker_color="#4C78A8"), 1, 2)
-    mr, h = p["abbott"]
-    fig.add_trace(go.Scatter(x=mr, y=h, mode="lines", showlegend=False,
-                             line=dict(color="#4C78A8")), 2, 1)
+    p, mk, s = it["plot"], it["marks"], it["summary"]
+    fig, axs = plt.subplots(2, 2, figsize=(13, 8.5))
+    fig.suptitle(f"{it['name']} — Sa {s['Sa']:.4g}, Sq {s['Sq']:.4g}, "
+                 f"Sz {s['Sz (max-min)']:.4g} {Z_LABEL}; Sdr {s['Sdr (%)']:.3g}%", fontsize=12)
+    fig.subplots_adjust(hspace=0.32, wspace=0.28)
+    xs, ys = it["xs"], it["ys"]
+
+    ax = axs[0, 0]
+    im = ax.imshow(it["zd"], origin="lower", cmap=COLORMAP,
+                   extent=[xs[0], xs[-1], ys[0], ys[-1]], aspect="equal")
+    fig.colorbar(im, ax=ax, shrink=0.8, label=f"Height ({Z_LABEL})")
+    ax.set_title("Height map (levelled; zero = lowest point)")
+    ax.set_xlabel(f"X ({XY_LABEL})")
+    ax.set_ylabel(f"Y ({XY_LABEL})")
+    if SHOW_MEAN_REFERENCE:
+        try:
+            ax.contour(xs, ys, it["zd"], levels=[mk["mean_level"]], colors="white", linewidths=0.8)
+        except Exception:
+            pass
+    if SHOW_EXTREMA:
+        for key, label, colour in (("peak", "Highest", RED), ("pit", "Lowest", CYAN)):
+            q = mk[key]
+            ax.scatter([q["x"]], [q["y"]], marker="D", s=60, c=colour, edgecolors="white", zorder=5)
+            ax.annotate(f"{label} {q['value']:.4g}", (q["x"], q["y"]), xytext=(6, 6),
+                        textcoords="offset points", fontsize=8, color="white",
+                        bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.5, lw=0))
     yy, ra = p["ra_rows"]
-    fig.add_trace(go.Scatter(x=yy, y=ra, mode="lines", showlegend=False,
-                             line=dict(color="#4C78A8", width=1)), 2, 2)
-    fig.update_xaxes(title_text=f"X ({XY_LABEL})", row=1, col=1)
-    fig.update_yaxes(title_text=f"Y ({XY_LABEL})", row=1, col=1)
-    fig.update_xaxes(title_text=f"Height about mean plane ({Z_LABEL})", row=1, col=2)
-    fig.update_yaxes(title_text="Pixels", row=1, col=2)
-    fig.update_xaxes(title_text="Material ratio (%)", row=2, col=1)
-    fig.update_yaxes(title_text=f"Height ({Z_LABEL})", row=2, col=1)
-    fig.update_xaxes(title_text=f"Y position of line ({XY_LABEL})", row=2, col=2)
-    fig.update_yaxes(title_text=f"Ra ({Z_LABEL})", row=2, col=2)
-    s = it["summary"]
-    fig.update_layout(
-        height=820, template="plotly_white", margin=dict(t=90),
-        title=dict(text=(f"{it['name']} — Sa {s['Sa']:.4g}, Sq {s['Sq']:.4g}, "
-                         f"Sz {s['Sz (max-min)']:.4g} {Z_LABEL}; Sdr {s['Sdr (%)']:.3g}%"), x=0.01))
+    if MARK_ROUGH_LINES and "ra_hi_row" in mk:
+        ax.axhline(yy[mk["ra_hi_row"]], color="white", ls=":", lw=1)
+        ax.annotate(f"Roughest line (Ra {mk['ra_hi']:.3g})", (xs[0], yy[mk["ra_hi_row"]]),
+                    xytext=(4, 3), textcoords="offset points", fontsize=8, color="white")
+
+    counts, edges = p["hist"]
+    axs[0, 1].stairs(counts, edges, fill=True, color="#4C78A8")
+    axs[0, 1].set_title("Height distribution")
+    axs[0, 1].set_xlabel(f"Height about mean plane ({Z_LABEL})")
+    axs[0, 1].set_ylabel("Pixels")
+
+    mr, h = p["abbott"]
+    axs[1, 0].plot(mr, h, color="#4C78A8")
+    axs[1, 0].set_title("Abbott-Firestone curve")
+    axs[1, 0].set_xlabel("Material ratio (%)")
+    axs[1, 0].set_ylabel(f"Height about mean plane ({Z_LABEL})")
+    axs[1, 0].grid(alpha=0.3)
+
+    ax = axs[1, 1]
+    ax.plot(yy, ra, color="#4C78A8", lw=0.8)
+    ax.set_title("Ra per scan line (along X)")
+    ax.set_xlabel(f"Y position of line ({XY_LABEL})")
+    ax.set_ylabel(f"Ra ({Z_LABEL})")
+    ax.grid(alpha=0.3)
+    if MARK_ROUGH_LINES and "ra_hi_row" in mk:
+        ax.axhline(mk["ra_mean"], color="grey", ls="--", lw=1)
+        ax.annotate(f"mean Ra {mk['ra_mean']:.3g}", (yy.min(), mk["ra_mean"]),
+                    xytext=(4, 3), textcoords="offset points", fontsize=8, color="grey")
+        for key, label, colour in (("ra_hi", "roughest", RED), ("ra_lo", "smoothest", CYAN)):
+            r = mk[key + "_row"]
+            ax.scatter([yy[r]], [mk[key]], marker="D", s=50, c=colour, edgecolors="black", zorder=5)
+            ax.annotate(f"{label} {mk[key]:.3g}", (yy[r], mk[key]), xytext=(6, 6),
+                        textcoords="offset points", fontsize=8)
     return fig
 
 
 def label_columns(df: pd.DataFrame) -> pd.DataFrame:
     ren = {}
     for c in df.columns:
-        if c in ("Projected area", "Developed area"):
+        if c in ("Highest height", "Lowest height", "Average height"):
+            ren[c] = f"{c} ({Z_LABEL})"
+        elif c in ("Projected area", "Developed area"):
             ren[c] = f"{c} ({XY_LABEL}^2)"
         elif re.match(r"^(S[a-zq]|Sp|Sv|Sz|R[aqpvtz])\b", c) and not c.startswith(("Ssk", "Sku")):
             ren[c] = f"{c} ({Z_LABEL})"
@@ -745,35 +885,22 @@ def main():
         print("\n" + summary.set_index("File").T.to_string())
     print(f"\nSummary written: {csv_path}")
 
-    paths = []
-    fig, post = build_3d_figure(results, f"Keyence 3D scans — {folder.name}", LINK_CAMERAS)
-    side = out_dir / f"side_by_side_{stamp}.html"
-    cfg = {"scrollZoom": True, "displaylogo": False,
-           "toImageButtonOptions": {"format": "png", "scale": 2}}
-    fig.write_html(side, include_plotlyjs=PLOTLY_JS, post_script=post, config=cfg)
-    paths.append(side)
-    individual = []
+    in_ipython = setup_backend()
+    figs = []
+    if SHOW_SIDE_BY_SIDE:
+        figs.append((f"side_by_side_{stamp}",
+                     build_3d_figure(results, f"Keyence 3D scans — {folder.name}", LINK_CAMERAS)))
     for r in results:
-        f1, _ = build_3d_figure([r], r["name"], False)
-        p = out_dir / f"{r['name']}_3d_{stamp}.html"
-        f1.write_html(p, include_plotlyjs=PLOTLY_JS, config=cfg)
-        individual.append(p)
-
-    # One analysis page: every sample's plots stacked.
-    ana = out_dir / f"analysis_{stamp}.html"
-    parts = []
-    for n_i, r in enumerate(results):
-        parts.append(build_analysis_figure(r).to_html(
-            full_html=False, include_plotlyjs=PLOTLY_JS if n_i == 0 else False, config=cfg))
-    ana.write_text("<html><head><meta charset='utf-8'><title>Roughness analysis</title></head>"
-                   "<body style='font-family:sans-serif'>" + "<hr>".join(parts) + "</body></html>",
-                   encoding="utf-8")
-    print(f"3D pages  : {side}\n            {len(individual)} individual pages in {out_dir}")
-    print(f"Analysis  : {ana}")
-
-    if OPEN_IN_BROWSER:
-        for p in [side, ana] + (individual if OPEN_INDIVIDUAL else []):
-            webbrowser.open(p.resolve().as_uri())
+        if SHOW_INDIVIDUAL:
+            figs.append((f"{r['name']}_3d_{stamp}", build_3d_figure([r], r["name"], False)))
+        if SHOW_ANALYSIS:
+            figs.append((f"{r['name']}_analysis_{stamp}", build_analysis_figure(r)))
+    if SAVE_PNG:
+        for stem, fig in figs:
+            fig.savefig(out_dir / f"{stem}.png", dpi=150)
+        print(f"PNG files written to {out_dir}")
+    if figs:
+        plt.show(block=not in_ipython)
     return summary
 
 
