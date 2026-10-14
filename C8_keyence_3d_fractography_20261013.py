@@ -33,6 +33,13 @@ Input files
         are treated as optical texture and paired to the CSV whose name
         matches (e.g. VF6_2_3_3D.csv <-> VF6_2_3_3D.tif or VF6_2_3.tif).
 
+Where the key values occur (SHOW_EXTREMA, SHOW_MEAN_REFERENCE,
+MARK_ROUGH_LINES): diamonds at the highest / lowest points on the 3D
+surfaces and height map, a mean-height plane in 3D and a mean-height
+contour on the map, and the roughest / smoothest scan lines on the Ra
+plot. The summary CSV also lists the highest, lowest and average height
+of the file and the pixel (col, row) where the extremes sit.
+
 Roughness reported (all after levelling, in Z_LABEL units)
   Areal (ISO 25178)  Sa, Sq, Sp, Sv, Sz (= max height - min height),
                      Ssk, Sku, Sz 1-99% (outlier-robust range),
@@ -86,27 +93,29 @@ INPUT_DIR = Path('/path/to/keyence_folder')
 OUTPUT_DIR = None
 
 # ---- Calibration -----------------------------------------------------
-# The CSV carries no pixel size, so enter the XY calibration from your
-# Keyence scan settings (the XY pitch in the scan info / TIFF). Z_UNIT
-# scales the CSV numbers into Z_LABEL units: leave it at 1.0 if the CSV
-# heights are already in the unit you want (e.g. mm or um), and set
-# Z_LABEL to that unit. Example: pitch 0.7 um, heights already in um ->
-# XY_PITCH = 0.7, Z_UNIT = 1.0, both labels "um".
-# VHX-7000 series: CSV heights are reported to be in microns, hence the
-# "um" Z default below; confirm against a known step height. The XY
-# pitch depends on lens + magnification: take it from the scale/
-# calibration shown in the VHX software for that image (or measure a
-# known distance on screen and divide by its pixel count).
-# With XY_PITCH left at 1.0 the XY axes are in pixels.
-XY_PITCH = 1.0          # size of one pixel in XY_LABEL units
-Z_UNIT = 1.0            # size of one raw height unit in Z_LABEL units
-Z_UNIT_TIFF = 1.0       # same, for height-map TIFFs (often differs)
+# The CSV carries no pixel size, so the user enters the calibration here.
+#   X_STEP  size of one pixel along X, in XY_LABEL units
+#   Y_STEP  size of one pixel along Y (defaults to X_STEP = square
+#           pixels; set it separately if your pixels are not square)
+#   Z_STEP  multiplier that turns the numbers in the file into Z_LABEL
+#           units (1.0 = the file heights are already in Z_LABEL)
+# All three are 1.0 for now, so XY is in pixels and Z is as in the file.
+# VHX-7000 series: CSV heights are reported to be in microns (hence the
+# "um" Z default below; confirm against a known step height). The XY
+# step depends on lens + magnification: take it from the scale shown in
+# the VHX software for that image (or measure a known distance on
+# screen and divide by its pixel count).
+X_STEP = 1.0
+Y_STEP = X_STEP         # change only if pixels are not square
+Z_STEP = 1.0
+Z_STEP_TIFF = Z_STEP    # same, for height-map TIFFs (often differs)
 XY_LABEL = "px"         # e.g. "um"
-Z_LABEL = "um"          # unit of the CSV heights (VHX exports microns)
+Z_LABEL = "um"          # unit of the heights after Z_STEP
 
 # Per-file overrides, keyed by file name without extension. Any of:
-#   xy_pitch, z_unit, roi=(x0, x1, y0, y1) in pixels of the raw grid
-# FILE_OVERRIDES = {"VF6_2_3_3D": {"xy_pitch": 0.7, "z_unit": 0.001,
+#   x_step, y_step, z_step, roi=(x0, x1, y0, y1) in pixels of the raw grid
+# FILE_OVERRIDES = {"VF6_2_3_3D": {"x_step": 0.7, "y_step": 0.7,
+#                                  "z_step": 1.0,
 #                                  "roi": (1500, 4000, 2000, 9000)}}
 FILE_OVERRIDES = {}
 
@@ -139,6 +148,22 @@ PROFILE_LINE = "mean"   # per-line reference: "mean" or "linear"
 PROFILE_SEGMENTS = 5    # Rz = mean peak-to-valley over this many segments
 # Scan lines with fewer valid points than this fraction are ignored.
 MIN_LINE_FILL = 0.5
+
+# ---- Marking where the key values occur --------------------------------
+# Highest / lowest points: a red / cyan diamond on the 3D surfaces and
+# on the analysis height map, labelled with the value.
+SHOW_EXTREMA = True
+# Which highest/lowest to mark: "levelled" (after plane removal, the
+# surface you are looking at, matches Sp / Sv) or "file" (the raw
+# numbers in the file, before any levelling).
+MARK_EXTREMA_OF = "levelled"
+# Average: a translucent plane at the mean height in 3D, and a white
+# contour on the height map where the surface crosses the mean height.
+SHOW_MEAN_REFERENCE = True
+# Roughness is spread over the whole surface, so it is marked per scan
+# line: the Ra-per-line plot shows the mean Ra and flags the roughest and
+# smoothest lines, and the height map draws a line at the roughest one.
+MARK_ROUGH_LINES = True
 
 # ---- 3D display ------------------------------------------------------
 # The browser can't draw 60 million points, so the preview is block-
@@ -475,13 +500,37 @@ def crop_roi(arr, roi):
     return arr[y0:y1, x0:x1]
 
 
+def extrema(z: np.ndarray):
+    """(max, (row, col), min, (row, col), mean) of the finite values."""
+    hi, hi_at, lo, lo_at = -np.inf, None, np.inf, None
+    total, count = 0.0, 0
+    for r0 in range(0, z.shape[0], CHUNK_ROWS):
+        blk = z[r0:r0 + CHUNK_ROWS]
+        m = np.isfinite(blk)
+        if not m.any():
+            continue
+        total += float(blk[m].sum(dtype=np.float64))
+        count += int(m.sum())
+        i = int(np.argmax(np.where(m, blk, -np.inf)))
+        r, c = divmod(i, blk.shape[1])
+        if blk[r, c] > hi:
+            hi, hi_at = float(blk[r, c]), (r0 + r, c)
+        i = int(np.argmin(np.where(m, blk, np.inf)))
+        r, c = divmod(i, blk.shape[1])
+        if blk[r, c] < lo:
+            lo, lo_at = float(blk[r, c]), (r0 + r, c)
+    return hi, hi_at, lo, lo_at, total / count
+
+
 def process(entry: dict) -> dict:
     name = entry["name"]
     ov = FILE_OVERRIDES.get(name, {})
     is_tiff = entry["kind"] == "tiff"
-    pitch = float(ov.get("xy_pitch", XY_PITCH))
-    zunit = float(ov.get("z_unit", Z_UNIT_TIFF if is_tiff else Z_UNIT))
+    dx = float(ov.get("x_step", X_STEP))
+    dy = float(ov.get("y_step", Y_STEP if "x_step" not in ov else dx))
+    zstep = float(ov.get("z_step", Z_STEP_TIFF if is_tiff else Z_STEP))
     roi = ov.get("roi", DEFAULT_ROI)
+    off_x, off_y = (roi[0], roi[2]) if roi else (0, 0)
 
     z = entry.get("data") if is_tiff else read_height_csv(entry["path"])
     if z is None:
@@ -489,28 +538,43 @@ def process(entry: dict) -> dict:
     apply_invalid(z, is_tiff)
     full_shape = z.shape
     z = np.ascontiguousarray(crop_roi(z, roi), dtype=np.float32)
-    z *= np.float32(zunit)
+    z *= np.float32(zstep)
     if z.size == 0 or not np.isfinite(z).any():
         print(f"  skip  {name}: no valid data (check ROI / INVALID_VALUES)")
         return None
     valid_pct = 100.0 * float(np.isfinite(z).mean())
+    # Highest / lowest / average of the heights as they are in the file.
+    f_hi, f_hi_at, f_lo, f_lo_at, f_mean = extrema(z)
     if GAUSS_SIGMA_PX > 0:
         z = gaussian_smooth(z, GAUSS_SIGMA_PX)
     level_surface(z, LEVEL_ORDER)
+    l_hi, l_hi_at, l_lo, l_lo_at, _ = extrema(z)
 
     H, W = z.shape
-    stats, plot, nvalid = areal_parameters(z, pitch, pitch)
-    sums = {"File": name, "Rows": H, "Cols": W, "Valid (%)": round(valid_pct, 2)}
+    stats, plot, nvalid = areal_parameters(z, dx, dy)
+    sums = {"File": name, "Rows": H, "Cols": W, "Valid (%)": round(valid_pct, 2),
+            "Highest height": f_hi, "Lowest height": f_lo, "Average height": f_mean,
+            "Highest at col": f_hi_at[1] + off_x, "Highest at row": f_hi_at[0] + off_y,
+            "Lowest at col": f_lo_at[1] + off_x, "Lowest at row": f_lo_at[0] + off_y,
+            "Peak (levelled) at col": l_hi_at[1] + off_x, "Peak (levelled) at row": l_hi_at[0] + off_y,
+            "Pit (levelled) at col": l_lo_at[1] + off_x, "Pit (levelled) at row": l_lo_at[0] + off_y}
     sums.update(stats)
-    px, ra_rows = profile_parameters(z, pitch, PROFILE_SEGMENTS, PROFILE_LINE, MIN_LINE_FILL)
-    py, _ = profile_parameters(z.T, pitch, PROFILE_SEGMENTS, PROFILE_LINE, MIN_LINE_FILL)
+    px, ra_rows = profile_parameters(z, dx, PROFILE_SEGMENTS, PROFILE_LINE, MIN_LINE_FILL)
+    py, _ = profile_parameters(z.T, dy, PROFILE_SEGMENTS, PROFILE_LINE, MIN_LINE_FILL)
     sums.update({f"{k} X": v for k, v in px.items()})
     sums.update({f"{k} Y": v for k, v in py.items()})
 
     # Display grid
     f = max(1, math.ceil(max(H, W) / MAX_DISPLAY_POINTS))
     zd = block_mean(z, f)
-    zd -= np.float32(np.nanmin(zd))
+    shift = float(np.nanmin(zd))
+    zd -= np.float32(shift)
+    Hc = zd.shape[0] * f
+
+    def y_of_row(r):
+        r = min(r, Hc - 1)
+        return (Hc - 1 - r) * dy if ROW0_AT == "top" else r * dy
+
     tex = None
     if USE_TEXTURE and entry.get("texture") is not None:
         img = entry["texture"]
@@ -526,13 +590,31 @@ def process(entry: dict) -> dict:
         zd = zd[::-1]
         if tex is not None:
             tex = tex[::-1]
-    xs = (np.arange(zd.shape[1]) * f + (f - 1) / 2.0) * pitch
-    ys = (np.arange(zd.shape[0]) * f + (f - 1) / 2.0) * pitch
-    plot["ra_rows"] = (np.arange(H) * pitch, ra_rows)
-    # Heatmap for the analysis page uses the same downsampled grid.
-    return {"name": name, "summary": sums, "plot": plot,
+    xs = (np.arange(zd.shape[1]) * f + (f - 1) / 2.0) * dx
+    ys = (np.arange(zd.shape[0]) * f + (f - 1) / 2.0) * dy
+
+    # Where the key values occur, in plot coordinates. Heights of the
+    # markers come from the full-resolution surface (the preview is
+    # block-averaged, so a sharp peak can sit slightly above it).
+    if MARK_EXTREMA_OF == "file":
+        hi_at, lo_at, hi_val, lo_val = f_hi_at, f_lo_at, f_hi, f_lo
+    else:
+        hi_at, lo_at, hi_val, lo_val = l_hi_at, l_lo_at, l_hi, l_lo
+
+    def mark(at, value):
+        r, c = at
+        return {"x": c * dx, "y": y_of_row(r), "z": float(z[r, c]) - shift, "value": value}
+
+    marks = {"peak": mark(hi_at, hi_val), "pit": mark(lo_at, lo_val), "mean_level": -shift}
+    if np.isfinite(ra_rows).any():
+        r_hi, r_lo = int(np.nanargmax(ra_rows)), int(np.nanargmin(ra_rows))
+        marks.update({"ra_hi_row": r_hi, "ra_lo_row": r_lo,
+                      "ra_hi": float(ra_rows[r_hi]), "ra_lo": float(ra_rows[r_lo]),
+                      "ra_mean": px["Ra"]})
+    plot["ra_rows"] = (np.array([y_of_row(r) for r in range(H)]), ra_rows)
+    return {"name": name, "summary": sums, "plot": plot, "marks": marks,
             "zd": zd, "xs": xs, "ys": ys, "tex": tex,
-            "tex_name": entry.get("texture_name"), "pitch": pitch}
+            "tex_name": entry.get("texture_name")}
 
 
 # ---------------------------------------------------------------------
@@ -618,6 +700,27 @@ def build_3d_figure(items, title: str, link: bool):
             mesh_idx.append(len(fig.data) - 1)
         else:
             mesh_idx.append(None)
+        mk = it["marks"]
+        if SHOW_EXTREMA:
+            for key, label, colour in (("peak", "Highest", "#E4002B"), ("pit", "Lowest", "#00C8FF")):
+                q = mk[key]
+                fig.add_trace(go.Scatter3d(
+                    x=[q["x"]], y=[q["y"]], z=[q["z"]], mode="markers+text",
+                    marker=dict(size=6, symbol="diamond", color=colour,
+                                line=dict(color="white", width=1)),
+                    text=[f"{label} {q['value']:.4g}"], textposition="top center",
+                    showlegend=False, name=label,
+                    hovertemplate=f"{label}: {q['value']:.4g} {Z_LABEL}<br>"
+                                  f"x {q['x']:.1f} {XY_LABEL}, y {q['y']:.1f} {XY_LABEL}<extra></extra>"),
+                    row=r + 1, col=c + 1)
+        if SHOW_MEAN_REFERENCE:
+            lvl = mk["mean_level"]
+            fig.add_trace(go.Surface(
+                x=[it["xs"][0], it["xs"][-1]], y=[it["ys"][0], it["ys"][-1]],
+                z=[[lvl, lvl], [lvl, lvl]], opacity=0.25, showscale=False,
+                colorscale=[[0, "#888888"], [1, "#888888"]], name="Mean height",
+                hovertemplate="Mean height plane<extra></extra>"),
+                row=r + 1, col=c + 1)
         lx = float(it["xs"][-1] - it["xs"][0]) or 1.0
         ly = float(it["ys"][-1] - it["ys"][0]) or 1.0
         lz = float(np.nanmax(zd)) or 1.0
@@ -645,11 +748,12 @@ def build_3d_figure(items, title: str, link: bool):
     ]
     if any(i is not None for i in mesh_idx):
         n_tr = len(fig.data)
-        vis_h = [True if t in surf_idx else False for t in range(n_tr)]
-        vis_t = list(vis_h)
+        vis_h = [True] * n_tr      # markers / mean plane stay visible
+        vis_t = [True] * n_tr
         for s, m in zip(surf_idx, mesh_idx):
             if m is not None:
-                vis_t[s], vis_t[m] = False, True
+                vis_h[m] = False
+                vis_t[s] = False
         menus.append(dict(type="buttons", direction="right", x=0.9, y=1.13, xanchor="left",
                           showactive=False,
                           buttons=[dict(label="Height", method="restyle", args=[{"visible": vis_h}]),
@@ -660,8 +764,11 @@ def build_3d_figure(items, title: str, link: bool):
         paper_bgcolor="white")
     fig.add_annotation(
         text="View / vertical exaggeration" + (" / colour" if len(menus) > 2 else "")
-        + " — left-drag rotate, right-drag pan, scroll zoom",
-        x=0.0, y=1.19, xref="paper", yref="paper", showarrow=False, xanchor="left",
+        + " — left-drag rotate, right-drag pan, scroll zoom"
+        + ("<br>Axis = height above the lowest point; Highest/Lowest labels are "
+           + ("relative to the mean plane" if MARK_EXTREMA_OF != "file" else "the values in the file")
+           if SHOW_EXTREMA else ""),
+        x=0.0, y=1.21, xref="paper", yref="paper", showarrow=False, xanchor="left",
         font=dict(size=11, color="#555"))
     post = LINK_JS if (link and n > 1) else None
     return fig, post
@@ -674,6 +781,29 @@ def build_analysis_figure(it):
         "Abbott-Firestone curve", "Ra per scan line (along X)"))
     fig.add_trace(go.Heatmap(x=it["xs"], y=it["ys"], z=it["zd"], colorscale=COLORSCALE,
                              colorbar=dict(title=Z_LABEL, len=0.4, y=0.8, thickness=10)), 1, 1)
+    mk = it["marks"]
+    if SHOW_MEAN_REFERENCE:
+        fig.add_trace(go.Contour(
+            x=it["xs"], y=it["ys"], z=it["zd"], showscale=False, hoverinfo="skip",
+            contours=dict(start=mk["mean_level"], end=mk["mean_level"], size=1,
+                          coloring="lines"),
+            colorscale=[[0, "white"], [1, "white"]],
+            line=dict(color="white", width=1.5), name="Mean height",
+            showlegend=False), 1, 1)
+    if SHOW_EXTREMA:
+        for key, label, colour in (("peak", "Highest", "#E4002B"), ("pit", "Lowest", "#00C8FF")):
+            q = mk[key]
+            fig.add_trace(go.Scatter(
+                x=[q["x"]], y=[q["y"]], mode="markers+text", showlegend=False,
+                marker=dict(size=11, symbol="diamond", color=colour,
+                            line=dict(color="white", width=1.5)),
+                text=[f"{label} {q['value']:.4g}"], textposition="top center",
+                hovertemplate=f"{label}: {q['value']:.4g} {Z_LABEL}<extra></extra>"), 1, 1)
+    if MARK_ROUGH_LINES and "ra_hi_row" in mk:
+        fig.add_hline(y=it["plot"]["ra_rows"][0][mk["ra_hi_row"]], row=1, col=1,
+                      line=dict(color="white", width=1, dash="dot"),
+                      annotation_text=f"Roughest line (Ra {mk['ra_hi']:.3g})",
+                      annotation_font_color="white", annotation_position="top left")
     fig.update_yaxes(scaleanchor="x", scaleratio=1, row=1, col=1)
     counts, edges = p["hist"]
     fig.add_trace(go.Bar(x=0.5 * (edges[:-1] + edges[1:]), y=counts, showlegend=False,
@@ -684,6 +814,15 @@ def build_analysis_figure(it):
     yy, ra = p["ra_rows"]
     fig.add_trace(go.Scatter(x=yy, y=ra, mode="lines", showlegend=False,
                              line=dict(color="#4C78A8", width=1)), 2, 2)
+    if MARK_ROUGH_LINES and "ra_hi_row" in mk:
+        fig.add_hline(y=mk["ra_mean"], row=2, col=2, line=dict(color="#888", dash="dash"),
+                      annotation_text=f"mean Ra {mk['ra_mean']:.3g}", annotation_position="top left")
+        for key, label, colour in (("ra_hi", "roughest", "#E4002B"), ("ra_lo", "smoothest", "#00C8FF")):
+            row_i = mk[key + "_row"]
+            fig.add_trace(go.Scatter(
+                x=[yy[row_i]], y=[mk[key]], mode="markers+text", showlegend=False,
+                marker=dict(size=9, symbol="diamond", color=colour, line=dict(color="black", width=1)),
+                text=[f"{label} {mk[key]:.3g}"], textposition="top center"), 2, 2)
     fig.update_xaxes(title_text=f"X ({XY_LABEL})", row=1, col=1)
     fig.update_yaxes(title_text=f"Y ({XY_LABEL})", row=1, col=1)
     fig.update_xaxes(title_text=f"Height about mean plane ({Z_LABEL})", row=1, col=2)
@@ -703,7 +842,9 @@ def build_analysis_figure(it):
 def label_columns(df: pd.DataFrame) -> pd.DataFrame:
     ren = {}
     for c in df.columns:
-        if c in ("Projected area", "Developed area"):
+        if c in ("Highest height", "Lowest height", "Average height"):
+            ren[c] = f"{c} ({Z_LABEL})"
+        elif c in ("Projected area", "Developed area"):
             ren[c] = f"{c} ({XY_LABEL}^2)"
         elif re.match(r"^(S[a-zq]|Sp|Sv|Sz|R[aqpvtz])\b", c) and not c.startswith(("Ssk", "Sku")):
             ren[c] = f"{c} ({Z_LABEL})"
