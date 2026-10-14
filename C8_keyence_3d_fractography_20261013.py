@@ -544,9 +544,13 @@ def save_crop(name: str, roi, shape) -> None:
 
 
 def _wait_for(state: dict, fig) -> None:
-    """Block until the crop window is accepted or closed."""
+    """Block until the crop window is accepted or closed.
+
+    Uses the canvas event loop directly. plt.pause() would re-raise the
+    window ten times a second and steal focus (on macOS that makes the
+    desktop bounce between the Spyder and figure screens)."""
     while not state["done"] and plt.fignum_exists(fig.number):
-        plt.pause(0.1)
+        fig.canvas.start_event_loop(0.2)
 
 
 def select_crop(name: str, z: np.ndarray, texture):
