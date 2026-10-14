@@ -68,6 +68,7 @@ script in this repository.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import sys
@@ -81,7 +82,7 @@ from PIL import Image
 
 import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Button, Slider
+from matplotlib.widgets import Button, RectangleSelector, Slider
 
 Image.MAX_IMAGE_PIXELS = None  # Keyence TIFFs can be very large
 
@@ -122,8 +123,29 @@ Z_LABEL = "um"          # unit of the heights after Z_STEP
 #                                  "roi": (1500, 4000, 2000, 9000)}}
 FILE_OVERRIDES = {}
 
-# ROI applied to every file unless overridden: (x0, x1, y0, y1) or None.
+# ---- Excluding background (crop) --------------------------------------
+# Everything outside the crop is left out of ALL calculations, the 3D
+# views and the texture. Crops are in pixels of the raw file (the CSV
+# grid; a colour TIFF is cropped to the same region automatically).
+#
+# 1) Interactive (recommended): the script opens each file's height map
+#    (and its colour TIFF when there is one). Drag a box around the
+#    sample, then click "Accept crop" (or press Enter). The box is saved
+#    to crop_regions.json in the output folder and reused next run, so
+#    you only draw it once per file.
+CROP_INTERACTIVE = True
+CROP_REDO = False        # True = ignore saved crops and draw them again
+CROP_PREVIEW_POINTS = 900   # size of the crop preview along its long side
+# 2) Fixed numbers: (x0, x1, y0, y1) for every file, or per file with
+#    FILE_OVERRIDES["name"]["roi"]. These win over saved/drawn crops.
 DEFAULT_ROI = None
+# 3) After cropping, also trim any fully-empty margin rows/columns.
+AUTO_TRIM_INVALID = True
+# 4) Height masks, in Z_LABEL units: pixels below / above these heights
+#    are treated as background (no measurement). Handy for a flat
+#    background plane that surrounds the sample. None = off.
+MASK_BELOW_Z = None
+MASK_ABOVE_Z = None
 
 # Values in the CSV/TIFF that mean "no measurement" (become NaN).
 # Keyence CSV exports mark unmeasured pixels with -1.000; the int32
@@ -497,11 +519,112 @@ def profile_parameters(z: np.ndarray, d: float, nseg: int, line: str, min_fill: 
 # ---------------------------------------------------------------------
 # Per-file pipeline
 # ---------------------------------------------------------------------
-def crop_roi(arr, roi):
-    if not roi:
-        return arr
-    x0, x1, y0, y1 = roi
-    return arr[y0:y1, x0:x1]
+_CROP_PATH = None        # set in main(): <output folder>/crop_regions.json
+
+
+def load_saved_crop(name: str, shape):
+    """Return (found, roi) from crop_regions.json; roi None = full image."""
+    try:
+        data = json.loads(Path(_CROP_PATH).read_text())
+        rec = data[name]
+        if list(rec.get("shape", [])) != list(shape):
+            return False, None
+        return True, (tuple(rec["roi"]) if rec.get("roi") else None)
+    except Exception:
+        return False, None
+
+
+def save_crop(name: str, roi, shape) -> None:
+    try:
+        data = json.loads(Path(_CROP_PATH).read_text())
+    except Exception:
+        data = {}
+    data[name] = {"roi": list(roi) if roi else None, "shape": list(shape)}
+    Path(_CROP_PATH).write_text(json.dumps(data, indent=2))
+
+
+def _wait_for(state: dict, fig) -> None:
+    """Block until the crop window is accepted or closed."""
+    while not state["done"] and plt.fignum_exists(fig.number):
+        plt.pause(0.1)
+
+
+def select_crop(name: str, z: np.ndarray, texture):
+    """Let the user drag a box on the height map / colour image.
+    Returns (x0, x1, y0, y1) in raw pixels, or None for the full image."""
+    H, W = z.shape
+    f = max(1, math.ceil(max(H, W) / CROP_PREVIEW_POINTS))
+    prev = block_mean(z, f)
+    ph, pw = prev.shape
+    lower = ROW0_AT == "bottom"
+    ext = [0, pw * f, 0, ph * f] if lower else [0, pw * f, ph * f, 0]
+    origin = "lower" if lower else "upper"
+    ncols = 2 if texture is not None else 1
+    fig, axs = plt.subplots(1, ncols, figsize=(7 * ncols, 7.5), sharex=True, sharey=True,
+                            squeeze=False)
+    axs = axs[0]
+    fig.suptitle(f"{name}: drag a box around the sample, then Accept crop (or press Enter)",
+                 fontsize=11)
+    fig.subplots_adjust(bottom=0.14, top=0.92)
+    lo, hi = (np.nanpercentile(prev, [2, 98]) if np.isfinite(prev).any() else (0, 1))
+    axs[0].imshow(prev, origin=origin, extent=ext, cmap=COLORMAP, aspect="equal",
+                  vmin=lo, vmax=hi)
+    axs[0].set_title("Height map (blank = no measurement)")
+    if texture is not None:
+        timg = texture.resize((pw, ph), Image.BILINEAR)
+        axs[1].imshow(np.asarray(timg), origin=origin, extent=ext, aspect="equal")
+        axs[1].set_title("Colour image")
+    for a in axs:
+        a.set_xlabel("X (file pixels)")
+    axs[0].set_ylabel("Y (file pixels)")
+
+    state = {"roi": None, "done": False}
+    sels = []
+
+    def on_select(src):
+        def cb(eclick, erelease):
+            x0, x1 = sorted([eclick.xdata, erelease.xdata])
+            y0, y1 = sorted([eclick.ydata, erelease.ydata])
+            state["roi"] = (x0, x1, y0, y1)
+            for sel in sels:
+                if sel is not src[0]:
+                    sel.extents = (x0, x1, y0, y1)
+            fig.canvas.draw_idle()
+        return cb
+    for a in axs:
+        holder = [None]
+        sel = RectangleSelector(a, on_select(holder), useblit=True, interactive=True,
+                                button=[1], minspanx=3, minspany=3, spancoords="pixels",
+                                props=dict(facecolor="red", edgecolor="white", alpha=0.25))
+        holder[0] = sel
+        sels.append(sel)
+
+    def accept(_e=None):
+        state["done"] = True
+
+    def full(_e=None):
+        state["roi"] = None
+        state["done"] = True
+    b1 = Button(fig.add_axes([0.30, 0.02, 0.18, 0.06]), "Accept crop")
+    b2 = Button(fig.add_axes([0.52, 0.02, 0.18, 0.06]), "Use full image")
+    b1.on_clicked(accept)
+    b2.on_clicked(full)
+    fig.canvas.mpl_connect("key_press_event",
+                           lambda e: accept() if e.key == "enter" else None)
+    fig._keyence_widgets = (b1, b2, sels)
+    plt.show(block=False)
+    _wait_for(state, fig)
+    if plt.fignum_exists(fig.number):
+        plt.close(fig)
+    r = state["roi"]
+    if r is None:
+        return None
+    x0, x1, y0, y1 = int(math.floor(r[0])), int(math.ceil(r[1])), int(math.floor(r[2])), int(math.ceil(r[3]))
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(W, x1), min(H, y1)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    return (x0, x1, y0, y1)
 
 
 def extrema(z: np.ndarray):
@@ -533,18 +656,45 @@ def process(entry: dict) -> dict:
     dx = float(ov.get("x_step", X_STEP))
     dy = float(ov.get("y_step", Y_STEP if "x_step" not in ov else dx))
     zstep = float(ov.get("z_step", Z_STEP_TIFF if is_tiff else Z_STEP))
-    roi = ov.get("roi", DEFAULT_ROI)
-    off_x, off_y = (roi[0], roi[2]) if roi else (0, 0)
 
     z = entry.get("data") if is_tiff else read_height_csv(entry["path"])
     if z is None:
         return None
     apply_invalid(z, is_tiff)
-    full_shape = z.shape
-    z = np.ascontiguousarray(crop_roi(z, roi), dtype=np.float32)
     z *= np.float32(zstep)
+    if MASK_BELOW_Z is not None:
+        z[z < MASK_BELOW_Z] = np.nan
+    if MASK_ABOVE_Z is not None:
+        z[z > MASK_ABOVE_Z] = np.nan
+    full_shape = z.shape
+
+    # Crop: fixed numbers > saved/drawn crop > ask.
+    roi = ov.get("roi", DEFAULT_ROI)
+    if roi is None and (CROP_INTERACTIVE or _CROP_PATH):
+        found, saved = (False, None) if CROP_REDO else load_saved_crop(name, full_shape)
+        if found:
+            roi = saved
+            print(f"  crop  {name}: using saved crop {roi}" if roi else f"  crop  {name}: full image")
+        elif CROP_INTERACTIVE:
+            roi = select_crop(name, z, entry.get("texture"))
+            save_crop(name, roi, full_shape)
+            print(f"  crop  {name}: {roi if roi else 'full image'} (saved)")
+    if roi:
+        x0, x1, y0, y1 = roi
+        z = np.ascontiguousarray(z[y0:y1, x0:x1], dtype=np.float32)
+    else:
+        x0, x1, y0, y1 = 0, full_shape[1], 0, full_shape[0]
+    if AUTO_TRIM_INVALID and z.size and np.isfinite(z).any():
+        ok = np.isfinite(z)
+        rows, cols = np.where(ok.any(axis=1))[0], np.where(ok.any(axis=0))[0]
+        r0, r1, c0, c1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+        if (r1 - r0, c1 - c0) != z.shape:
+            z = np.ascontiguousarray(z[r0:r1, c0:c1])
+            x0, x1, y0, y1 = x0 + c0, x0 + c1, y0 + r0, y0 + r1
+    roi = (x0, x1, y0, y1) if (x0, x1, y0, y1) != (0, full_shape[1], 0, full_shape[0]) else None
+    off_x, off_y = x0, y0
     if z.size == 0 or not np.isfinite(z).any():
-        print(f"  skip  {name}: no valid data (check ROI / INVALID_VALUES)")
+        print(f"  skip  {name}: no valid data (check crop / masks / INVALID_VALUES)")
         return None
     valid_pct = 100.0 * float(np.isfinite(z).mean())
     # Highest / lowest / average of the heights as they are in the file.
@@ -557,6 +707,7 @@ def process(entry: dict) -> dict:
     H, W = z.shape
     stats, plot, nvalid = areal_parameters(z, dx, dy)
     sums = {"File": name, "Rows": H, "Cols": W, "Valid (%)": round(valid_pct, 2),
+            "Crop x0": x0, "Crop x1": x1, "Crop y0": y0, "Crop y1": y1,
             "Highest height": f_hi, "Lowest height": f_lo, "Average height": f_mean,
             "Highest at col": f_hi_at[1] + off_x, "Highest at row": f_hi_at[0] + off_y,
             "Lowest at col": f_lo_at[1] + off_x, "Lowest at row": f_lo_at[0] + off_y,
@@ -861,6 +1012,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    global _CROP_PATH
+    _CROP_PATH = out_dir / "crop_regions.json"
+    in_ipython = setup_backend()
     print(f"Scanning {folder} ...")
     entries = discover(folder)
     results = []
@@ -885,7 +1039,6 @@ def main():
         print("\n" + summary.set_index("File").T.to_string())
     print(f"\nSummary written: {csv_path}")
 
-    in_ipython = setup_backend()
     figs = []
     if SHOW_SIDE_BY_SIDE:
         figs.append((f"side_by_side_{stamp}",
