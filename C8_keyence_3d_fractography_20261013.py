@@ -78,7 +78,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -137,13 +137,17 @@ FILE_OVERRIDES = {}
 #                  click "Accept crop" (or press Enter). The box is saved to
 #                  crop_regions.json in the output folder and reused on later
 #                  runs, so each file is drawn once (INPUT_PATH = folder)
-#   "pixels"       crop to the four numbers in CROP_PIXELS below, for the one
-#                  file named in INPUT_PATH
+#   "pixels"       crop to the four corner points in CROP_POINTS below (the
+#                  area can be any four-sided shape, not just a rectangle), for
+#                  the one file named in INPUT_PATH
 CROP_MODE = "interactive"
-# "pixels" mode: (x0, x1, y0, y1) in file pixels. x = column, y = row counted
-# from the first row of the file; x1 and y1 are exclusive (Python slicing), so
-# (150, 600, 80, 330) keeps columns 150-599 and rows 80-329.
-CROP_PIXELS = (0, 0, 0, 0)
+# "pixels" mode: four corner points (x, y) in file pixels, x = column and
+# y = row counted from the first row of the file. List them in order around
+# the outline (clockwise or counter-clockwise, not criss-crossed). Only the
+# area inside the four-sided shape is analysed; everything outside it is
+# treated as background. Tip: in the "interactive" crop window, the mouse
+# position shown at the bottom of the window is in these same file pixels.
+CROP_POINTS = ((0, 0), (0, 0), (0, 0), (0, 0))   # replace with your four points
 # "interactive" mode only:
 CROP_REDO = False        # True = ignore saved crops and draw them again
 CROP_PREVIEW_POINTS = 900   # size of the crop preview along its long side
@@ -662,18 +666,44 @@ def select_crop(name: str, z: np.ndarray, texture):
     return (x0, x1, y0, y1), True
 
 
-def validate_pixels(roi, shape):
-    """Check CROP_PIXELS against the grid (rows, cols); return a clean tuple."""
+def _segments_cross(p1, p2, p3, p4) -> bool:
+    def orient(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    d1, d2 = orient(p3, p4, p1), orient(p3, p4, p2)
+    d3, d4 = orient(p1, p2, p3), orient(p1, p2, p4)
+    return d1 * d2 < 0 and d3 * d4 < 0
+
+
+def validate_points(points, shape):
+    """Check CROP_POINTS against the grid (rows, cols); return a clean list."""
     H, W = shape
     try:
-        x0, x1, y0, y1 = (int(v) for v in roi)
+        pts = [(float(x), float(y)) for x, y in points]
     except (TypeError, ValueError):
-        raise ValueError(f"CROP_PIXELS must be four numbers (x0, x1, y0, y1), got {roi!r}")
-    if not (0 <= x0 < x1 <= W and 0 <= y0 < y1 <= H):
-        raise ValueError(f"CROP_PIXELS {(x0, x1, y0, y1)} does not fit this file's grid "
-                         f"({W} columns x {H} rows): need 0 <= x0 < x1 <= {W} and "
-                         f"0 <= y0 < y1 <= {H}")
-    return (x0, x1, y0, y1)
+        pts = []
+    if len(pts) != 4:
+        raise ValueError("CROP_POINTS must be four (x, y) points, e.g. "
+                         f"((100, 50), (900, 80), (880, 700), (120, 650)); got {points!r}")
+    bad = [q for q in pts if not (0 <= q[0] <= W and 0 <= q[1] <= H)]
+    if bad:
+        raise ValueError(f"CROP_POINTS {bad} lie outside this file's grid ({W} columns x {H} "
+                         f"rows): need 0 <= x <= {W} and 0 <= y <= {H}")
+    area = 0.5 * abs(sum(pts[i][0] * pts[(i + 1) % 4][1] - pts[(i + 1) % 4][0] * pts[i][1]
+                         for i in range(4)))
+    if area < 4 or _segments_cross(pts[0], pts[1], pts[2], pts[3]) or \
+            _segments_cross(pts[1], pts[2], pts[3], pts[0]):
+        raise ValueError(f"CROP_POINTS {pts} do not form a four-sided shape: list the points "
+                         "in order around the outline (not criss-crossed) and make sure the "
+                         "area is not zero")
+    return pts
+
+
+def polygon_mask(points, x0, y0, width, height) -> np.ndarray:
+    """Boolean mask (height, width) that is True inside the polygon, in the
+    coordinates of a crop whose top-left file pixel is (x0, y0)."""
+    img = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(img).polygon([(x - x0, y - y0) for x, y in points], fill=1)
+    return np.asarray(img, dtype=bool)
 
 
 def extrema(z: np.ndarray):
@@ -719,9 +749,16 @@ def process(entry: dict) -> dict:
 
     # Crop: fixed numbers > saved/drawn crop > ask.
     roi = None
+    poly = None
     if CROP_MODE == "pixels":
-        roi = validate_pixels(CROP_PIXELS, full_shape)
-        print(f"  crop  {name}: fixed pixels {roi} (CROP_MODE = 'pixels')")
+        poly = validate_points(CROP_POINTS, full_shape)
+        H0, W0 = full_shape
+        roi = (max(0, int(math.floor(min(q[0] for q in poly)))),
+               min(W0, int(math.ceil(max(q[0] for q in poly))) + 1),
+               max(0, int(math.floor(min(q[1] for q in poly)))),
+               min(H0, int(math.ceil(max(q[1] for q in poly))) + 1))
+        print(f"  crop  {name}: four-point crop {[(round(a, 1), round(b, 1)) for a, b in poly]} "
+              f"(CROP_MODE = 'pixels')")
     elif CROP_MODE == "interactive":
         found, saved = (False, None) if CROP_REDO else load_saved_crop(name, full_shape)
         if found:
@@ -741,6 +778,8 @@ def process(entry: dict) -> dict:
     if roi:
         x0, x1, y0, y1 = roi
         z = np.ascontiguousarray(z[y0:y1, x0:x1], dtype=np.float32)
+        if poly is not None:        # blank everything outside the four-sided shape
+            z[~polygon_mask(poly, x0, y0, x1 - x0, y1 - y0)] = np.nan
     else:
         x0, x1, y0, y1 = 0, full_shape[1], 0, full_shape[0]
     if AUTO_TRIM_INVALID and z.size and np.isfinite(z).any():
@@ -767,6 +806,7 @@ def process(entry: dict) -> dict:
     stats, plot, nvalid = areal_parameters(z, dx, dy)
     sums = {"File": name, "Rows": H, "Cols": W, "Valid (%)": round(valid_pct, 2),
             "Crop x0": x0, "Crop x1": x1, "Crop y0": y0, "Crop y1": y1,
+            "Crop points": (" ".join(f"({a:g},{b:g})" for a, b in poly) if poly else ""),
             "Highest height": f_hi, "Lowest height": f_lo, "Average height": f_mean,
             "Highest at col": f_hi_at[1] + off_x, "Highest at row": f_hi_at[0] + off_y,
             "Lowest at col": f_lo_at[1] + off_x, "Lowest at row": f_lo_at[0] + off_y,
@@ -884,7 +924,14 @@ def draw_surface_axes(ax, it, vmin, vmax):
     surf = ax.plot_surface(X, Y, zd, cmap=COLORMAP, vmin=vmin, vmax=vmax, **kw)
     tex_surf = None
     if it["tex"] is not None:
-        tex_surf = ax.plot_surface(X, Y, np.nan_to_num(zd), facecolors=it["tex"] / 255.0, **kw)
+        # RGBA: a cell is drawn only when all four of its corners were measured,
+        # so background outside a crop (and holes) are transparent instead of
+        # being painted flat at height 0 or stretched down as thin curtains.
+        ok = np.isfinite(zd)
+        face_ok = np.zeros_like(ok)
+        face_ok[:-1, :-1] = ok[:-1, :-1] & ok[1:, :-1] & ok[:-1, 1:] & ok[1:, 1:]
+        rgba = np.concatenate([it["tex"] / 255.0, face_ok[..., None].astype(float)], axis=-1)
+        tex_surf = ax.plot_surface(X, Y, np.nan_to_num(zd), facecolors=rgba, **kw)
         tex_surf.set_visible(False)
     mk = it["marks"]
     if SHOW_MEAN_REFERENCE:
