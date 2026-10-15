@@ -558,6 +558,11 @@ def select_crop(name: str, z: np.ndarray, texture):
     Returns ((x0, x1, y0, y1) or None for the full image, decided). `decided`
     is False when the window was closed without a choice (nothing is saved)."""
     H, W = z.shape
+    if "inline" in matplotlib.get_backend().lower():
+        print("  crop  the crop window needs an interactive graphics backend but Spyder is "
+              "using the inline one.\n        Fix: Preferences > IPython console > Graphics > "
+              "Backend = Qt, restart the kernel, run again. Using the full image this run.")
+        return None, False
     f = max(1, math.ceil(max(H, W) / CROP_PREVIEW_POINTS))
     prev = block_mean(z, f)
     ph, pw = prev.shape
@@ -625,6 +630,12 @@ def select_crop(name: str, z: np.ndarray, texture):
                            lambda e: accept() if e.key == "enter" else None)
     fig._keyence_widgets = (b1, b2, sels)
     plt.show(block=False)
+    try:                       # bring the window to the front once (Qt only)
+        win = fig.canvas.manager.window
+        win.raise_()
+        win.activateWindow()
+    except Exception:
+        pass
     _wait_for(state, fig)
     if plt.fignum_exists(fig.number):
         plt.close(fig)
@@ -686,6 +697,11 @@ def process(entry: dict) -> dict:
 
     # Crop: fixed numbers > saved/drawn crop > ask.
     roi = ov.get("roi", DEFAULT_ROI)
+    if roi is not None:
+        src = "FILE_OVERRIDES" if "roi" in ov else "DEFAULT_ROI"
+        print(f"  crop  {name}: fixed crop {tuple(roi)} from {src} (no crop window)")
+    elif not CROP_INTERACTIVE:
+        print(f"  crop  {name}: CROP_INTERACTIVE is False (no crop window)")
     if roi is None and (CROP_INTERACTIVE or _CROP_PATH):
         found, saved = (False, None) if CROP_REDO else load_saved_crop(name, full_shape)
         if found:
@@ -694,6 +710,8 @@ def process(entry: dict) -> dict:
                   f"  crop  {name}: saved choice is the FULL image")
             print(f"        (to draw it again: CROP_REDO = True, or delete {_CROP_PATH})")
         elif CROP_INTERACTIVE:
+            print(f"  crop  {name}: no saved crop - opening the crop window "
+                  f"(graphics backend: {matplotlib.get_backend()})")
             roi, decided = select_crop(name, z, entry.get("texture"))
             if decided:
                 save_crop(name, roi, full_shape)
@@ -1034,6 +1052,8 @@ def main():
     global _CROP_PATH
     _CROP_PATH = out_dir / "crop_regions.json"
     in_ipython = setup_backend()
+    print(f"Graphics backend: {matplotlib.get_backend()}   |   CROP_INTERACTIVE={CROP_INTERACTIVE}, "
+          f"CROP_REDO={CROP_REDO}\nCrop choices are stored in: {_CROP_PATH}")
     print(f"Scanning {folder} ...")
     entries = discover(folder)
     results = []
