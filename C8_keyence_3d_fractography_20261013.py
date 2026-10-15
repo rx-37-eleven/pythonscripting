@@ -555,7 +555,8 @@ def _wait_for(state: dict, fig) -> None:
 
 def select_crop(name: str, z: np.ndarray, texture):
     """Let the user drag a box on the height map / colour image.
-    Returns (x0, x1, y0, y1) in raw pixels, or None for the full image."""
+    Returns ((x0, x1, y0, y1) or None for the full image, decided). `decided`
+    is False when the window was closed without a choice (nothing is saved)."""
     H, W = z.shape
     f = max(1, math.ceil(max(H, W) / CROP_PREVIEW_POINTS))
     prev = block_mean(z, f)
@@ -582,7 +583,7 @@ def select_crop(name: str, z: np.ndarray, texture):
         a.set_xlabel("X (file pixels)")
     axs[0].set_ylabel("Y (file pixels)")
 
-    state = {"roi": None, "done": False}
+    state = {"roi": None, "done": False, "decided": False}
     sels = []
 
     def on_select(src):
@@ -604,10 +605,17 @@ def select_crop(name: str, z: np.ndarray, texture):
         sels.append(sel)
 
     def accept(_e=None):
+        if state["roi"] is None:        # nothing drawn yet: keep the window open
+            fig.suptitle(f"{name}: draw a box first (or click 'Use full image')",
+                         fontsize=11, color="red")
+            fig.canvas.draw_idle()
+            return
+        state["decided"] = True
         state["done"] = True
 
     def full(_e=None):
         state["roi"] = None
+        state["decided"] = True
         state["done"] = True
     b1 = Button(fig.add_axes([0.30, 0.02, 0.18, 0.06]), "Accept crop")
     b2 = Button(fig.add_axes([0.52, 0.02, 0.18, 0.06]), "Use full image")
@@ -621,14 +629,18 @@ def select_crop(name: str, z: np.ndarray, texture):
     if plt.fignum_exists(fig.number):
         plt.close(fig)
     r = state["roi"]
+    if not state["decided"]:
+        print(f"  crop  {name}: window closed without accepting - using the full image "
+              "this run (not saved, you will be asked again)")
+        return None, False
     if r is None:
-        return None
+        return None, True
     x0, x1, y0, y1 = int(math.floor(r[0])), int(math.ceil(r[1])), int(math.floor(r[2])), int(math.ceil(r[3]))
     x0, y0 = max(0, x0), max(0, y0)
     x1, y1 = min(W, x1), min(H, y1)
     if x1 - x0 < 2 or y1 - y0 < 2:
-        return None
-    return (x0, x1, y0, y1)
+        return None, True
+    return (x0, x1, y0, y1), True
 
 
 def extrema(z: np.ndarray):
@@ -678,11 +690,14 @@ def process(entry: dict) -> dict:
         found, saved = (False, None) if CROP_REDO else load_saved_crop(name, full_shape)
         if found:
             roi = saved
-            print(f"  crop  {name}: using saved crop {roi}" if roi else f"  crop  {name}: full image")
+            print(f"  crop  {name}: using saved crop {roi}" if roi else
+                  f"  crop  {name}: saved choice is the FULL image")
+            print(f"        (to draw it again: CROP_REDO = True, or delete {_CROP_PATH})")
         elif CROP_INTERACTIVE:
-            roi = select_crop(name, z, entry.get("texture"))
-            save_crop(name, roi, full_shape)
-            print(f"  crop  {name}: {roi if roi else 'full image'} (saved)")
+            roi, decided = select_crop(name, z, entry.get("texture"))
+            if decided:
+                save_crop(name, roi, full_shape)
+                print(f"  crop  {name}: {roi if roi else 'full image'} (saved to {_CROP_PATH})")
     if roi:
         x0, x1, y0, y1 = roi
         z = np.ascontiguousarray(z[y0:y1, x0:x1], dtype=np.float32)
