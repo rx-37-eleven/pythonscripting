@@ -51,7 +51,7 @@ Roughness reported (all after levelling, in Z_LABEL units)
                      along Y separately (crack-direction matters).
   Note: no waviness (lambda-c) filter is applied by default, so these
   are raw-surface values after plane/polynomial removal. Use
-  GAUSS_SIGMA_PX (needs scipy) to smooth first, and ROI to analyse a
+  GAUSS_SIGMA_PX (needs scipy) to smooth first, and CROP_MODE to analyse a
   region of interest.
 
 Run this from Spyder: edit the CONFIG block below, then press Run.
@@ -90,10 +90,16 @@ Image.MAX_IMAGE_PIXELS = None  # Keyence TIFFs can be very large
 # CONFIG — edit these values, then press Run in Spyder.
 # =====================================================================
 
-# Folder containing the Keyence CSV / TIFF files.
-INPUT_DIR = Path('/path/to/keyence_folder')
+# What to analyse - depends on CROP_MODE (set further down):
+#   CROP_MODE = "none" or "interactive"  ->  a FOLDER of Keyence CSV/TIFF files
+#   CROP_MODE = "pixels"                 ->  ONE FILE (the CSV, or a height TIFF),
+#                                            because the pixel numbers only fit
+#                                            the one scan they were measured on.
+#                                            Its colour TIFF is found next to it.
+INPUT_PATH = Path('/path/to/keyence_folder')
+# e.g. INPUT_PATH = Path('/path/to/keyence_folder/VF6_2_3_3D.csv')
 
-# Where results go (None = <INPUT_DIR>/keyence_3d_output).
+# Where results go (None = a "keyence_3d_output" folder next to the input).
 OUTPUT_DIR = None
 
 # ---- Calibration -----------------------------------------------------
@@ -117,31 +123,33 @@ XY_LABEL = "px"         # e.g. "um"
 Z_LABEL = "um"          # unit of the heights after Z_STEP
 
 # Per-file overrides, keyed by file name without extension. Any of:
-#   x_step, y_step, z_step, roi=(x0, x1, y0, y1) in pixels of the raw grid
-# FILE_OVERRIDES = {"VF6_2_3_3D": {"x_step": 0.7, "y_step": 0.7,
-#                                  "z_step": 1.0,
-#                                  "roi": (1500, 4000, 2000, 9000)}}
+#   x_step, y_step, z_step
+# FILE_OVERRIDES = {"VF6_2_3_3D": {"x_step": 0.7, "y_step": 0.7, "z_step": 1.0}}
 FILE_OVERRIDES = {}
 
 # ---- Excluding background (crop) --------------------------------------
 # Everything outside the crop is left out of ALL calculations, the 3D
 # views and the texture. Crops are in pixels of the raw file (the CSV
 # grid; a colour TIFF is cropped to the same region automatically).
-#
-# 1) Interactive (recommended): the script opens each file's height map
-#    (and its colour TIFF when there is one). Drag a box around the
-#    sample, then click "Accept crop" (or press Enter). The box is saved
-#    to crop_regions.json in the output folder and reused next run, so
-#    you only draw it once per file.
-CROP_INTERACTIVE = True
+# Choose ONE mode:
+#   "none"         no crop: the whole scan is analysed (INPUT_PATH = folder)
+#   "interactive"  drag a box on each file's height map / colour image, then
+#                  click "Accept crop" (or press Enter). The box is saved to
+#                  crop_regions.json in the output folder and reused on later
+#                  runs, so each file is drawn once (INPUT_PATH = folder)
+#   "pixels"       crop to the four numbers in CROP_PIXELS below, for the one
+#                  file named in INPUT_PATH
+CROP_MODE = "interactive"
+# "pixels" mode: (x0, x1, y0, y1) in file pixels. x = column, y = row counted
+# from the first row of the file; x1 and y1 are exclusive (Python slicing), so
+# (150, 600, 80, 330) keeps columns 150-599 and rows 80-329.
+CROP_PIXELS = (0, 0, 0, 0)
+# "interactive" mode only:
 CROP_REDO = False        # True = ignore saved crops and draw them again
 CROP_PREVIEW_POINTS = 900   # size of the crop preview along its long side
-# 2) Fixed numbers: (x0, x1, y0, y1) for every file, or per file with
-#    FILE_OVERRIDES["name"]["roi"]. These win over saved/drawn crops.
-DEFAULT_ROI = None
-# 3) After cropping, also trim any fully-empty margin rows/columns.
+# After cropping (any mode), also trim any fully-empty margin rows/columns.
 AUTO_TRIM_INVALID = True
-# 4) Height masks, in Z_LABEL units: pixels below / above these heights
+# Height masks (any mode), in Z_LABEL units: pixels below / above these heights
 #    are treated as background (no measurement). Handy for a flat
 #    background plane that surrounds the sample. None = off.
 MASK_BELOW_Z = None
@@ -654,6 +662,20 @@ def select_crop(name: str, z: np.ndarray, texture):
     return (x0, x1, y0, y1), True
 
 
+def validate_pixels(roi, shape):
+    """Check CROP_PIXELS against the grid (rows, cols); return a clean tuple."""
+    H, W = shape
+    try:
+        x0, x1, y0, y1 = (int(v) for v in roi)
+    except (TypeError, ValueError):
+        raise ValueError(f"CROP_PIXELS must be four numbers (x0, x1, y0, y1), got {roi!r}")
+    if not (0 <= x0 < x1 <= W and 0 <= y0 < y1 <= H):
+        raise ValueError(f"CROP_PIXELS {(x0, x1, y0, y1)} does not fit this file's grid "
+                         f"({W} columns x {H} rows): need 0 <= x0 < x1 <= {W} and "
+                         f"0 <= y0 < y1 <= {H}")
+    return (x0, x1, y0, y1)
+
+
 def extrema(z: np.ndarray):
     """(max, (row, col), min, (row, col), mean) of the finite values."""
     hi, hi_at, lo, lo_at = -np.inf, None, np.inf, None
@@ -696,26 +718,26 @@ def process(entry: dict) -> dict:
     full_shape = z.shape
 
     # Crop: fixed numbers > saved/drawn crop > ask.
-    roi = ov.get("roi", DEFAULT_ROI)
-    if roi is not None:
-        src = "FILE_OVERRIDES" if "roi" in ov else "DEFAULT_ROI"
-        print(f"  crop  {name}: fixed crop {tuple(roi)} from {src} (no crop window)")
-    elif not CROP_INTERACTIVE:
-        print(f"  crop  {name}: CROP_INTERACTIVE is False (no crop window)")
-    if roi is None and (CROP_INTERACTIVE or _CROP_PATH):
+    roi = None
+    if CROP_MODE == "pixels":
+        roi = validate_pixels(CROP_PIXELS, full_shape)
+        print(f"  crop  {name}: fixed pixels {roi} (CROP_MODE = 'pixels')")
+    elif CROP_MODE == "interactive":
         found, saved = (False, None) if CROP_REDO else load_saved_crop(name, full_shape)
         if found:
             roi = saved
             print(f"  crop  {name}: using saved crop {roi}" if roi else
                   f"  crop  {name}: saved choice is the FULL image")
             print(f"        (to draw it again: CROP_REDO = True, or delete {_CROP_PATH})")
-        elif CROP_INTERACTIVE:
+        else:
             print(f"  crop  {name}: no saved crop - opening the crop window "
                   f"(graphics backend: {matplotlib.get_backend()})")
             roi, decided = select_crop(name, z, entry.get("texture"))
             if decided:
                 save_crop(name, roi, full_shape)
                 print(f"  crop  {name}: {roi if roi else 'full image'} (saved to {_CROP_PATH})")
+    else:
+        print(f"  crop  {name}: CROP_MODE = 'none' (whole scan)")
     if roi:
         x0, x1, y0, y1 = roi
         z = np.ascontiguousarray(z[y0:y1, x0:x1], dtype=np.float32)
@@ -1042,9 +1064,20 @@ def label_columns(df: pd.DataFrame) -> pd.DataFrame:
 # Main
 # ---------------------------------------------------------------------
 def main():
-    folder = Path(INPUT_DIR)
-    if not folder.is_dir():
-        sys.exit(f"INPUT_DIR does not exist: {folder}")
+    if CROP_MODE not in ("none", "interactive", "pixels"):
+        sys.exit(f'CROP_MODE must be "none", "interactive" or "pixels", got {CROP_MODE!r}')
+    target = Path(INPUT_PATH)
+    if CROP_MODE == "pixels":
+        if not target.is_file():
+            sys.exit('CROP_MODE = "pixels" needs INPUT_PATH to be ONE FILE (the CSV, or a '
+                     f'height TIFF), not a folder:\n  {target}')
+        folder = target.parent
+    else:
+        if not target.is_dir():
+            sys.exit(f'CROP_MODE = "{CROP_MODE}" needs INPUT_PATH to be a FOLDER, but this is '
+                     f'not one:\n  {target}\nTo analyse a single file with pixel numbers, '
+                     'set CROP_MODE = "pixels".')
+        folder = target
     out_dir = Path(OUTPUT_DIR) if OUTPUT_DIR else folder / "keyence_3d_output"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1052,10 +1085,17 @@ def main():
     global _CROP_PATH
     _CROP_PATH = out_dir / "crop_regions.json"
     in_ipython = setup_backend()
-    print(f"Graphics backend: {matplotlib.get_backend()}   |   CROP_INTERACTIVE={CROP_INTERACTIVE}, "
-          f"CROP_REDO={CROP_REDO}\nCrop choices are stored in: {_CROP_PATH}")
-    print(f"Scanning {folder} ...")
+    print(f"Graphics backend: {matplotlib.get_backend()}   |   CROP_MODE = {CROP_MODE!r}")
+    if CROP_MODE == "interactive":
+        print(f"Crop choices are stored in: {_CROP_PATH}   (CROP_REDO={CROP_REDO})")
+    print(f"Scanning {target} ...")
     entries = discover(folder)
+    if CROP_MODE == "pixels":
+        entries = [e for e in entries if e["path"].resolve() == target.resolve()]
+        if not entries:
+            sys.exit(f"{target.name} is not a usable height file (expected a numeric CSV grid "
+                     "or a 16/32-bit height TIFF; a colour TIFF is picked up automatically "
+                     "when it sits next to the CSV with a matching name).")
     results = []
     for e in entries:
         print(f"  load  {e['path'].name}" + (f"  (+ texture {e['texture_name']})" if e["texture"] is not None else ""))
