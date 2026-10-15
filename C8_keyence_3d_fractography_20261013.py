@@ -133,8 +133,9 @@ FILE_OVERRIDES = {}
 # grid; a colour TIFF is cropped to the same region automatically).
 # Choose ONE mode:
 #   "none"         no crop: the whole scan is analysed (INPUT_PATH = folder)
-#   "interactive"  drag a box on each file's height map / colour image, then
-#                  click "Accept crop" (or press Enter). The box is saved to
+#   "interactive"  click four corner points around the sample on each file's
+#                  height map / colour image (in order around the outline), then
+#                  click "Accept crop" (or press Enter). The shape is saved to
 #                  crop_regions.json in the output folder and reused on later
 #                  runs, so each file is drawn once (INPUT_PATH = folder)
 #   "pixels"       crop to the four corner points in CROP_POINTS below (the
@@ -146,7 +147,8 @@ CROP_MODE = "interactive"
 # the outline (clockwise or counter-clockwise, not criss-crossed). Only the
 # area inside the four-sided shape is analysed; everything outside it is
 # treated as background. Tip: in the "interactive" crop window, the mouse
-# position shown at the bottom of the window is in these same file pixels.
+# position shown at the bottom of the window is in these same file pixels, and
+# the four points you click are saved (as "points") in crop_regions.json.
 CROP_POINTS = ((0, 0), (0, 0), (0, 0), (0, 0))   # replace with your four points
 # "interactive" mode only:
 CROP_REDO = False        # True = ignore saved crops and draw them again
@@ -535,23 +537,31 @@ _CROP_PATH = None        # set in main(): <output folder>/crop_regions.json
 
 
 def load_saved_crop(name: str, shape):
-    """Return (found, roi) from crop_regions.json; roi None = full image."""
+    """Return (found, points) from crop_regions.json; points None = full image.
+    Older files that stored a rectangle are converted to its four corners."""
     try:
         data = json.loads(Path(_CROP_PATH).read_text())
         rec = data[name]
         if list(rec.get("shape", [])) != list(shape):
             return False, None
-        return True, (tuple(rec["roi"]) if rec.get("roi") else None)
+        if rec.get("points"):
+            return True, [tuple(q) for q in rec["points"]]
+        if rec.get("roi"):
+            x0, x1, y0, y1 = rec["roi"]
+            x1, y1 = x1 - 1, y1 - 1          # old end values were exclusive
+            return True, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        return True, None
     except Exception:
         return False, None
 
 
-def save_crop(name: str, roi, shape) -> None:
+def save_crop(name: str, points, shape) -> None:
     try:
         data = json.loads(Path(_CROP_PATH).read_text())
     except Exception:
         data = {}
-    data[name] = {"roi": list(roi) if roi else None, "shape": list(shape)}
+    data[name] = {"points": [list(q) for q in points] if points else None,
+                  "shape": list(shape)}
     Path(_CROP_PATH).write_text(json.dumps(data, indent=2))
 
 
@@ -566,9 +576,10 @@ def _wait_for(state: dict, fig) -> None:
 
 
 def select_crop(name: str, z: np.ndarray, texture):
-    """Let the user drag a box on the height map / colour image.
-    Returns ((x0, x1, y0, y1) or None for the full image, decided). `decided`
-    is False when the window was closed without a choice (nothing is saved)."""
+    """Let the user click four corner points on the height map / colour image.
+    Returns (four (x, y) points in file pixels, or None for the full image,
+    decided). `decided` is False when the window was closed without a choice
+    (nothing is saved)."""
     H, W = z.shape
     if "inline" in matplotlib.get_backend().lower():
         print("  crop  the crop window needs an interactive graphics backend but Spyder is "
@@ -585,8 +596,6 @@ def select_crop(name: str, z: np.ndarray, texture):
     fig, axs = plt.subplots(1, ncols, figsize=(7 * ncols, 7.5), sharex=True, sharey=True,
                             squeeze=False)
     axs = axs[0]
-    fig.suptitle(f"{name}: drag a box around the sample, then Accept crop (or press Enter)",
-                 fontsize=11)
     fig.subplots_adjust(bottom=0.14, top=0.92)
     lo, hi = (np.nanpercentile(prev, [2, 98]) if np.isfinite(prev).any() else (0, 1))
     axs[0].imshow(prev, origin=origin, extent=ext, cmap=COLORMAP, aspect="equal",
@@ -600,47 +609,97 @@ def select_crop(name: str, z: np.ndarray, texture):
         a.set_xlabel("X (file pixels)")
     axs[0].set_ylabel("Y (file pixels)")
 
-    state = {"roi": None, "done": False, "decided": False}
-    sels = []
+    state = {"points": [], "done": False, "decided": False}
+    artists = []        # everything drawn for the current points
 
-    def on_select(src):
-        def cb(eclick, erelease):
-            x0, x1 = sorted([eclick.xdata, erelease.xdata])
-            y0, y1 = sorted([eclick.ydata, erelease.ydata])
-            state["roi"] = (x0, x1, y0, y1)
-            for sel in sels:
-                if sel is not src[0]:
-                    sel.extents = (x0, x1, y0, y1)
-            fig.canvas.draw_idle()
-        return cb
-    for a in axs:
-        holder = [None]
-        sel = RectangleSelector(a, on_select(holder), useblit=True, interactive=True,
-                                button=[1], minspanx=3, minspany=3, spancoords="pixels",
-                                props=dict(facecolor="red", edgecolor="white", alpha=0.25))
-        holder[0] = sel
-        sels.append(sel)
+    def say(msg, colour="black"):
+        fig.suptitle(f"{name}: {msg}", fontsize=11, color=colour)
+        fig.canvas.draw_idle()
+
+    def prompt():
+        n = len(state["points"])
+        if n < 4:
+            say(f"click corner {n + 1} of 4 around the sample (in order around the outline)")
+        else:
+            say("click Accept crop (or press Enter); Undo / Clear to change it")
+
+    def redraw():
+        for art in artists:
+            art.remove()
+        artists.clear()
+        pts = state["points"]
+        for a in axs:
+            if pts:
+                xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+                closed = len(pts) == 4
+                artists.extend(a.plot(xs + ([xs[0]] if closed else []),
+                                      ys + ([ys[0]] if closed else []),
+                                      "-o", color="white", mfc="red", mec="white", lw=1.5,
+                                      ms=7, zorder=5))
+                if closed:
+                    artists.append(a.fill(xs, ys, color="red", alpha=0.22, zorder=4)[0])
+                for i, (x, y) in enumerate(pts):
+                    artists.append(a.annotate(str(i + 1), (x, y), xytext=(6, 6),
+                                              textcoords="offset points", color="white",
+                                              fontsize=10, fontweight="bold", zorder=6))
+        prompt()
+
+    def add_point(x, y):
+        if len(state["points"]) >= 4:
+            return
+        state["points"].append((min(max(float(x), 0.0), float(W)),
+                                min(max(float(y), 0.0), float(H))))
+        redraw()
+
+    def on_click(event):
+        if event.inaxes not in axs or event.button != 1 or event.xdata is None:
+            return
+        tb = getattr(fig.canvas, "toolbar", None)
+        if tb is not None and getattr(tb, "mode", ""):      # zoom / pan tool is active
+            return
+        add_point(event.xdata, event.ydata)
+
+    def undo(_e=None):
+        if state["points"]:
+            state["points"].pop()
+        redraw()
+
+    def clear(_e=None):
+        state["points"].clear()
+        redraw()
 
     def accept(_e=None):
-        if state["roi"] is None:        # nothing drawn yet: keep the window open
-            fig.suptitle(f"{name}: draw a box first (or click 'Use full image')",
-                         fontsize=11, color="red")
-            fig.canvas.draw_idle()
+        pts = state["points"]
+        if len(pts) < 4:
+            say(f"{len(pts)} of 4 corners placed - click {4 - len(pts)} more "
+                "(or 'Use full image')", "red")
+            return
+        try:
+            validate_points(pts, (H, W))
+        except ValueError:
+            say("those corners cross over each other - Clear and click them in order "
+                "around the outline", "red")
             return
         state["decided"] = True
         state["done"] = True
 
     def full(_e=None):
-        state["roi"] = None
+        state["points"].clear()
         state["decided"] = True
         state["done"] = True
-    b1 = Button(fig.add_axes([0.30, 0.02, 0.18, 0.06]), "Accept crop")
-    b2 = Button(fig.add_axes([0.52, 0.02, 0.18, 0.06]), "Use full image")
-    b1.on_clicked(accept)
-    b2.on_clicked(full)
-    fig.canvas.mpl_connect("key_press_event",
-                           lambda e: accept() if e.key == "enter" else None)
-    fig._keyence_widgets = (b1, b2, sels)
+
+    bx = [0.12, 0.31, 0.50, 0.69]
+    buttons = [Button(fig.add_axes([x, 0.02, 0.17, 0.06]), label)
+               for x, label in zip(bx, ("Accept crop", "Undo last point", "Clear points",
+                                        "Use full image"))]
+    for b, fn in zip(buttons, (accept, undo, clear, full)):
+        b.on_clicked(fn)
+    fig.canvas.mpl_connect("button_press_event", on_click)
+    fig.canvas.mpl_connect("key_press_event", lambda e: accept() if e.key == "enter" else
+                           (undo() if e.key in ("backspace", "u") else None))
+    state["add"] = add_point
+    fig._keyence_widgets = buttons
+    prompt()
     plt.show(block=False)
     try:                       # bring the window to the front once (Qt only)
         win = fig.canvas.manager.window
@@ -651,19 +710,13 @@ def select_crop(name: str, z: np.ndarray, texture):
     _wait_for(state, fig)
     if plt.fignum_exists(fig.number):
         plt.close(fig)
-    r = state["roi"]
     if not state["decided"]:
         print(f"  crop  {name}: window closed without accepting - using the full image "
               "this run (not saved, you will be asked again)")
         return None, False
-    if r is None:
+    if not state["points"]:
         return None, True
-    x0, x1, y0, y1 = int(math.floor(r[0])), int(math.ceil(r[1])), int(math.floor(r[2])), int(math.ceil(r[3]))
-    x0, y0 = max(0, x0), max(0, y0)
-    x1, y1 = min(W, x1), min(H, y1)
-    if x1 - x0 < 2 or y1 - y0 < 2:
-        return None, True
-    return (x0, x1, y0, y1), True
+    return [(round(x, 1), round(y, 1)) for x, y in state["points"]], True
 
 
 def _segments_cross(p1, p2, p3, p4) -> bool:
@@ -748,33 +801,36 @@ def process(entry: dict) -> dict:
     full_shape = z.shape
 
     # Crop: fixed numbers > saved/drawn crop > ask.
-    roi = None
     poly = None
     if CROP_MODE == "pixels":
         poly = validate_points(CROP_POINTS, full_shape)
-        H0, W0 = full_shape
-        roi = (max(0, int(math.floor(min(q[0] for q in poly)))),
-               min(W0, int(math.ceil(max(q[0] for q in poly))) + 1),
-               max(0, int(math.floor(min(q[1] for q in poly)))),
-               min(H0, int(math.ceil(max(q[1] for q in poly))) + 1))
         print(f"  crop  {name}: four-point crop {[(round(a, 1), round(b, 1)) for a, b in poly]} "
               f"(CROP_MODE = 'pixels')")
     elif CROP_MODE == "interactive":
         found, saved = (False, None) if CROP_REDO else load_saved_crop(name, full_shape)
         if found:
-            roi = saved
-            print(f"  crop  {name}: using saved crop {roi}" if roi else
+            poly = saved
+            print(f"  crop  {name}: using saved crop {poly}" if poly else
                   f"  crop  {name}: saved choice is the FULL image")
             print(f"        (to draw it again: CROP_REDO = True, or delete {_CROP_PATH})")
         else:
             print(f"  crop  {name}: no saved crop - opening the crop window "
                   f"(graphics backend: {matplotlib.get_backend()})")
-            roi, decided = select_crop(name, z, entry.get("texture"))
+            poly, decided = select_crop(name, z, entry.get("texture"))
             if decided:
-                save_crop(name, roi, full_shape)
-                print(f"  crop  {name}: {roi if roi else 'full image'} (saved to {_CROP_PATH})")
+                save_crop(name, poly, full_shape)
+                print(f"  crop  {name}: {poly if poly else 'full image'} (saved to {_CROP_PATH})")
+        if poly:
+            poly = validate_points(poly, full_shape)
     else:
         print(f"  crop  {name}: CROP_MODE = 'none' (whole scan)")
+    roi = None
+    if poly:
+        H0, W0 = full_shape
+        roi = (max(0, int(math.floor(min(q[0] for q in poly)))),
+               min(W0, int(math.ceil(max(q[0] for q in poly))) + 1),
+               max(0, int(math.floor(min(q[1] for q in poly)))),
+               min(H0, int(math.ceil(max(q[1] for q in poly))) + 1))
     if roi:
         x0, x1, y0, y1 = roi
         z = np.ascontiguousarray(z[y0:y1, x0:x1], dtype=np.float32)
